@@ -132,12 +132,13 @@ labora serve --port 8000
 
 详细文档请查看 [docs/](docs/) 目录：
 
-### 核心设计文档（5 个）
+### 核心设计文档（6 个）
 - [整体架构](docs/architecture.md) - 系统架构、技术选型、CLI/API 设计
 - [桌面应用打包](docs/desktop-packaging.md) - Electron + Python 打包方案
 - [文献研究工作流](docs/literature-workflow.md) - LangGraph 人机协作工作流
 - [记忆系统](docs/memory.md) - 可插拔的三层记忆架构
 - [测试方案](docs/testing.md) - 包含量化指标的完整测试方案
+- [MVP 任务清单](docs/mvp-tasks.md) - 10 个任务、每个任务含可验收标准
 
 ### 快速链接
 - **技术栈**：Electron + React + Pretext + Python + uv + FastAPI + LangGraph
