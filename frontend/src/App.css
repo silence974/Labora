@@ -1,0 +1,46 @@
+:root {
+  font-family: system-ui, -apple-system, sans-serif;
+  color-scheme: light dark;
+  background: #0f0f0f;
+  color: #efefef;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+.app-header {
+  text-align: center;
+  padding: 3rem 0 2rem;
+}
+
+.app-header h1 {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.subtitle {
+  color: #aaa;
+  margin-bottom: 1.5rem;
+}
+
+.status {
+  display: inline-block;
+  padding: 0.3rem 0.8rem;
+  border-radius: 1rem;
+  font-size: 0.85rem;
+}
+
+.status-checking { background: #333; color: #aaa; }
+.status-ok       { background: #1a3a1a; color: #4ade80; }
+.status-error    { background: #3a1a1a; color: #f87171; }
+
+.app-main {
+  text-align: center;
+  color: #888;
+  padding: 2rem 0;
+}
