@@ -38,12 +38,24 @@ Labora 是一个专为科研工作者设计的 AI 研究助手，能够：
 
 ```
 Labora/
-├── frontend/          # 前端应用
-├── backend/           # 后端服务
-├── shared/            # 共享代码
-├── docs/              # 项目文档
-└── docker-compose.yml # 容器编排
+├── frontend/          # 前端应用（React + Vite + TypeScript）
+├── backend/           # 后端服务（FastAPI + LangGraph）
+├── desktop/           # 桌面应用（Electron）
+├── scripts/           # 构建脚本
+└── docs/              # 项目文档
+    ├── mvp-tasks.md   # MVP 任务清单（实时更新）
+    └── ...
 ```
+
+## 开发流程
+
+**重要**：每完成一个 MVP 任务后，必须同步更新 [docs/mvp-tasks.md](docs/mvp-tasks.md)：
+1. 标记验收标准为已完成 `[x]`
+2. 在任务标题后添加 `✅`
+3. 记录完成时间和关键说明
+4. 如有设计变更，在任务下方添加"设计说明"
+
+当前进度：**Task 2/10 已完成**
 
 ## 快速开始
 
