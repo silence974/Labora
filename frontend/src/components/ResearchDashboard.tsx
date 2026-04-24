@@ -122,7 +122,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
       )}
 
       {/* Editor Toolbar */}
-      <div className="bg-academic-panel border-b border-academic-border p-3 flex items-center justify-between shrink-0">
+      <div className="bg-academic-panel border-b-2 border-academic-border p-3 px-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1">
           <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif font-bold" title="Bold">B</button>
           <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif italic" title="Italic">I</button>
@@ -143,22 +143,23 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
       </div>
 
       {/* Editor Area */}
-      <div className="flex-1 overflow-y-auto p-8 bg-white relative">
-        <div className="max-w-2xl mx-auto">
+      <div className="flex-1 overflow-y-auto bg-white relative" style={{ margin: '24px !important' }}>
+        <div className="py-12 pl-20 pr-8">
+          <div className="max-w-2xl mx-auto">
           <input
             type="text"
             defaultValue="Methodology: Comparing CNNs and Vision Transformers"
-            className="w-full font-serif text-2xl font-bold mb-6 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
+            className="w-full font-serif text-2xl font-bold mb-8 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
             placeholder="Report Title..."
           />
 
-          <div className="font-serif text-sm leading-relaxed text-academic-text/90 space-y-4">
+          <div className="font-serif text-sm leading-relaxed text-academic-text/90 space-y-6 px-8">
             <p>In this section, we analyze the fundamental differences between Convolutional Neural Networks (CNNs) and Vision Transformers (ViTs) in handling computer vision tasks.</p>
 
             <h3 className="text-lg font-bold mt-6 mb-2">1. Receptive Fields and Inductive Bias</h3>
             <p>CNNs inherently possess a strong inductive bias towards translation invariance and locality, processing images through hierarchical local receptive fields. This makes them highly efficient for capturing local textures and edges early in the network.</p>
 
-            <div className="my-4 p-4 bg-academic-bg border border-academic-border rounded-lg font-mono text-xs text-academic-muted relative group">
+            <div className="my-6 p-6 bg-academic-bg border border-academic-border rounded-lg font-mono text-xs text-academic-muted relative group">
               <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
                 <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-copy"></i></button>
                 <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-play"></i></button>
@@ -176,10 +177,11 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
             <p>Conversely, as noted in recent literature, Vision Transformers rely on the self-attention mechanism, which globally connects all patches of an image from the very first layer. This allows ViTs to capture long-range dependencies immediately, reducing the inductive bias but requiring larger datasets for effective training.</p>
           </div>
         </div>
+        </div>
       </div>
 
       {/* Bottom Split - LLM Research Area */}
-      <div className="h-[320px] shrink-0 border-t border-academic-border bg-academic-panel flex overflow-hidden">
+      <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
         <ResearchProgress />
         <AIChat />
       </div>
@@ -189,7 +191,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
 
 function ResearchProgress() {
   return (
-    <div className="w-1/2 border-r border-academic-border flex flex-col">
+    <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
       <div className="p-3 border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0">
         <h3 className="font-serif text-sm font-bold flex items-center gap-2">
           <i className="fa-solid fa-bars-progress text-academic-accent text-xs"></i>
@@ -200,7 +202,7 @@ function ResearchProgress() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-6">
         <div className="relative pl-4 space-y-5 before:absolute before:inset-y-0 before:left-[23px] before:w-px before:bg-academic-border">
           {/* Completed */}
           <div className="relative z-10 flex gap-3 opacity-60">
@@ -261,7 +263,7 @@ function AIChat() {
       </div>
 
       {/* Chat History */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
         <div className="flex gap-3">
           <div className="w-6 h-6 rounded-full overflow-hidden shrink-0 border border-academic-border">
             <img src="https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg" className="w-full h-full object-cover" alt="User" />
@@ -305,7 +307,7 @@ function AIChat() {
 
 function RightWorkspace() {
   return (
-    <section className="flex-1 flex flex-col bg-academic-bg p-6 overflow-hidden relative">
+    <section className="flex-1 flex flex-col bg-academic-bg p-6 pl-8 overflow-hidden relative border-l-2 border-academic-border">
 
       {/* Toolbar */}
       <div className="bg-academic-panel rounded-[12px] shadow-soft border border-academic-border p-2 mb-4 flex items-center justify-between shrink-0">
@@ -335,7 +337,7 @@ function RightWorkspace() {
 
 function LaTeXViewer() {
   return (
-    <article className="flex-[2] bg-white rounded-[14px] shadow-soft border border-academic-border overflow-y-auto p-12 relative">
+    <article className="flex-[2] bg-white rounded-[14px] shadow-soft border-2 border-academic-border overflow-y-auto p-12 relative">
       <div className="max-w-3xl mx-auto">
         <header className="text-center mb-12 border-b border-academic-border pb-8">
           <h1 className="font-serif text-3xl font-bold leading-tight mb-6">Transformers in Vision: A Comprehensive Survey</h1>
@@ -382,7 +384,7 @@ function LaTeXViewer() {
 
 function AnnotationPanel() {
   return (
-    <aside className="flex-1 bg-white rounded-[14px] shadow-soft border border-academic-border flex flex-col overflow-hidden">
+    <aside className="flex-1 bg-white rounded-[14px] shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
       <div className="p-4 border-b border-academic-border bg-academic-hover flex items-center justify-between">
         <h3 className="font-serif font-bold text-sm flex items-center gap-2">
           <i className="fa-regular fa-pen-to-square text-academic-accent"></i>
@@ -394,7 +396,7 @@ function AnnotationPanel() {
         </div>
       </div>
 
-      <div className="flex-1 p-4 overflow-y-auto space-y-4">
+      <div className="flex-1 p-6 overflow-y-auto space-y-4">
         <div className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
           <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
             <span>Section 1. Introduction</span>
