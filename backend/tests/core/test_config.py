@@ -67,22 +67,35 @@ class TestConfig:
         # JSON 中的其他配置仍然生效
         assert config.openai_model == "gpt-3.5-turbo"
 
-    def test_default_values(self):
+    def test_default_values(self, monkeypatch, tmp_path):
         """测试默认值"""
-        config = Config()
+        # 清除所有环境变量
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+        monkeypatch.delenv("LABORA_DATA_DIR", raising=False)
+        monkeypatch.delenv("DB_PATH", raising=False)
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            config = Config()
 
         assert config.openai_model == "gpt-4o-mini"
         assert config.db_path.endswith("labora.db")
 
-    def test_validate(self, monkeypatch):
+    def test_validate(self, monkeypatch, tmp_path):
         """测试配置验证"""
+        # 清除环境变量
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
         # 没有 API key
-        config = Config()
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            config = Config()
         assert config.validate() is False
 
         # 有 API key
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        config = Config()
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            config = Config()
         assert config.validate() is True
 
     def test_get_openai_kwargs(self, monkeypatch):
@@ -98,12 +111,14 @@ class TestConfig:
         assert kwargs["model"] == "gpt-4"
         assert kwargs["base_url"] == "https://custom.api.com"
 
-    def test_get_openai_kwargs_no_base_url(self, monkeypatch):
+    def test_get_openai_kwargs_no_base_url(self, monkeypatch, tmp_path):
         """测试没有自定义 base_url"""
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
 
-        config = Config()
-        kwargs = config.get_openai_kwargs()
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            config = Config()
+            kwargs = config.get_openai_kwargs()
 
         assert "base_url" not in kwargs or kwargs.get("base_url") is None
 

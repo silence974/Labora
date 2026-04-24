@@ -14,6 +14,11 @@ from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
 
+def get_default_data_dir() -> str:
+    """获取默认数据目录"""
+    return str(Path.home() / ".config" / "labora" / "data")
+
+
 class Config:
     """应用配置"""
 
@@ -42,14 +47,22 @@ class Config:
             or "gpt-4o-mini"
         )
 
-        # 数据库配置
-        default_db_path = str(
-            Path(__file__).parent.parent.parent / "data" / "labora.db"
+        # 数据存储配置
+        default_data_dir = get_default_data_dir()
+        self.data_dir: str = (
+            os.getenv("LABORA_DATA_DIR")
+            or json_config.get("data_dir")
+            or default_data_dir
         )
+
+        # 确保数据目录存在
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+        # 数据库路径（在数据目录下）
         self.db_path: str = (
             os.getenv("DB_PATH")
             or json_config.get("db_path")
-            or default_db_path
+            or str(Path(self.data_dir) / "labora.db")
         )
 
     def _load_json_config(self) -> Dict[str, Any]:

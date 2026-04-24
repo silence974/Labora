@@ -37,6 +37,7 @@ cp config.json.example ~/.config/labora/config.json
   "openai_api_key": "sk-your-api-key-here",
   "openai_model": "gpt-4o-mini",
   "openai_api_base": null,
+  "data_dir": null,
   "db_path": null
 }
 ```
@@ -61,7 +62,8 @@ OPENAI_API_KEY=sk-xxx uv run python main.py
 - `openai_api_key`: OpenAI API 密钥（必需）
 - `openai_model`: 使用的模型，默认 `gpt-4o-mini`
 - `openai_api_base`: 自定义 API 端点（可选，用于代理或自建服务）
-- `db_path`: 数据库文件路径（可选，默认为 `data/labora.db`）
+- `data_dir`: 数据存储目录（可选，默认为 `~/.config/labora/data`）
+- `db_path`: 数据库文件路径（可选，默认为 `data_dir/labora.db`）
 
 ## 验证配置
 
