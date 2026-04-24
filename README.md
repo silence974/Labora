@@ -5,157 +5,236 @@
 ## 项目概述
 
 Labora 是一个专为科研工作者设计的 AI 研究助手，能够：
-- 📚 **文献检索与管理**: 自动检索学术论文、整理文献库
+- 📚 **文献检索与管理**: 自动检索学术论文（ArXiv）、整理文献库
 - 🔍 **深度阅读分析**: 理解论文内容、提取关键信息、总结要点
-- 🧠 **知识图谱构建**: 建立概念关系、追踪研究脉络
 - 💡 **研究问题探索**: 多轮迭代式深度研究、生成综述报告
-- 📝 **笔记与标注**: 管理阅读笔记、文献标注、研究想法
-- 🔗 **Obsidian 集成**: 支持导出到 Obsidian，利用双向链接和知识图谱
+- 📝 **笔记与标注**: 自动生成阅读笔记、文献标注
 
-## 技术栈
+## 功能特性
 
-### 桌面应用
-- Electron - 桌面容器
-- React + Vite - 前端框架
-- Pretext - 文本布局引擎（用于论文阅读器）
-- TypeScript - 类型安全
+### 核心功能
+- **研究工作流**：输入研究问题 → 自动探索文献 → 选择核心论文 → 协作阅读 → 生成综述报告
+- **论文阅读器**：输入 ArXiv ID → 自动解析 LaTeX 源码 → 提取关键信息 → 生成结构化笔记
+- **可插拔记忆系统**：支持短期缓存（InMemoryCache）和长期存储（SQLite）
+- **学术搜索**：集成 ArXiv API，支持关键词搜索和论文详情获取
 
-### 技术栈
+### 技术架构
+- **后端**：FastAPI + LangGraph + LangChain + OpenAI
+- **前端**：React + TypeScript + Vite
+- **数据库**：SQLite（论文和笔记存储）
+- **工具**：ArXiv API + LaTeX 解析
 
-- **Python 3.10+** - 核心语言
-- **uv** - 依赖管理（10-100x 快于 pip）
-- **FastAPI** - API 服务
-- **LangGraph** - Agent 编排
-- **PyInstaller** - 打包为独立可执行文件
+## 快速开始
 
-### 记忆层
-- Redis - 短期记忆/缓存
-- PostgreSQL + pgvector - 长期记忆/向量检索
-- Neo4j - 知识图谱（可选）
-- Obsidian - 笔记管理（可选集成）
+### 前置要求
+- Python 3.10+
+- Node.js 18+
+- uv（Python 包管理器）
+- OpenAI API Key
+
+### 1. 配置 API 密钥
+
+创建 `.env` 文件（或使用 `~/.config/labora/config.json`）：
+
+```bash
+# 方式 1：使用 .env 文件
+cp .env.example .env
+# 编辑 .env 文件，填入你的 OpenAI API Key
+
+# 方式 2：使用 JSON 配置文件
+mkdir -p ~/.config/labora
+cp config.json.example ~/.config/labora/config.json
+# 编辑 config.json 文件
+```
+
+详见 [配置文档](docs/configuration.md)
+
+### 2. 启动后端
+
+```bash
+cd backend
+uv sync
+uv run python main.py
+```
+
+后端将在 `http://127.0.0.1:8765` 启动
+
+### 3. 启动前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+前端将在 `http://localhost:5173` 启动
+
+### 4. 访问应用
+
+在浏览器中打开 `http://localhost:5173`
+
+## 使用指南
+
+### 研究工作流
+
+1. 点击"研究工作流"标签
+2. 输入研究问题，例如：
+   - "What are the recent advances in transformer architectures?"
+   - "How does attention mechanism work in NLP?"
+3. 点击"开始研究"
+4. 等待工作流完成（约 1-2 分钟）
+5. 查看生成的综述报告
+
+### 论文阅读器
+
+1. 点击"论文阅读器"标签
+2. 输入 ArXiv ID，例如：
+   - `1706.03762`（Attention Is All You Need）
+   - `arxiv:1706.03762`（带前缀也可以）
+3. 点击"开始阅读"
+4. 等待阅读完成（约 10-20 秒）
+5. 查看提取的关键信息和生成的笔记
 
 ## 项目结构
 
 ```
 Labora/
-├── frontend/          # 前端应用（React + Vite + TypeScript）
-├── backend/           # 后端服务（FastAPI + LangGraph）
-├── desktop/           # 桌面应用（Electron）
-├── scripts/           # 构建脚本
-└── docs/              # 项目文档
-    ├── mvp-tasks.md   # MVP 任务清单（实时更新）
-    └── ...
+├── backend/                 # 后端服务
+│   ├── labora/
+│   │   ├── agent/          # LangGraph 工作流
+│   │   │   ├── paper_reader.py      # 论文阅读子图
+│   │   │   └── research_workflow.py # 研究主工作流
+│   │   ├── api/            # FastAPI 路由
+│   │   │   └── routes/
+│   │   │       ├── research.py      # 研究工作流 API
+│   │   │       └── papers.py        # 论文相关 API
+│   │   ├── core/           # 核心配置
+│   │   │   └── config.py            # 配置管理
+│   │   ├── memory/         # 记忆系统
+│   │   │   ├── interface.py         # 抽象接口
+│   │   │   ├── short_term.py        # 短期缓存
+│   │   │   ├── long_term.py         # 长期存储
+│   │   │   └── manager.py           # 记忆管理器
+│   │   └── tools/          # 工具集
+│   │       ├── arxiv_tool.py        # ArXiv 搜索
+│   │       └── latex_parser.py      # LaTeX 解析
+│   ├── tests/              # 测试（60+ 个测试）
+│   └── main.py             # 入口文件
+├── frontend/               # 前端应用
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ResearchWorkflow.tsx # 研究工作流组件
+│   │   │   └── PaperReader.tsx      # 论文阅读器组件
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   └── package.json
+├── docs/                   # 文档
+│   ├── mvp-tasks.md        # MVP 任务清单
+│   └── configuration.md    # 配置说明
+└── README.md
 ```
 
-## 开发流程
+## API 文档
 
-**重要**：每完成一个 MVP 任务后，必须同步更新 [docs/mvp-tasks.md](docs/mvp-tasks.md)：
-1. 标记验收标准为已完成 `[x]`
-2. 在任务标题后添加 `✅`
-3. 记录完成时间和关键说明
-4. 如有设计变更，在任务下方添加"设计说明"
+### 研究工作流 API
 
-当前进度：**Task 2/10 已完成**
+- `POST /api/research/start` - 启动研究任务
+- `GET /api/research/{task_id}/status` - 查询任务状态
+- `GET /api/research/{task_id}/result` - 获取研究结果
+- `GET /api/research/` - 列出所有任务
+- `DELETE /api/research/{task_id}` - 删除任务
 
-## 快速开始
+### 论文相关 API
 
-### 开发模式
+- `POST /api/papers/search` - 搜索论文
+- `GET /api/papers/{paper_id}` - 获取论文详情
+- `POST /api/papers/read` - 启动论文阅读任务
+- `GET /api/papers/read/{task_id}/status` - 查询阅读任务状态
+- `GET /api/papers/read/{task_id}/result` - 获取阅读结果
+
+## 测试
+
+### 运行所有测试
 
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd Labora
-
-# 1. 启动后端
 cd backend
+uv run pytest tests/ -v
+```
+
+### 运行特定测试
+
+```bash
+# 记忆系统测试
+uv run pytest tests/memory/ -v
+
+# 工具测试
+uv run pytest tests/tools/ -v
+
+# Agent 测试
+uv run pytest tests/agent/ -v
+
+# API 测试
+uv run pytest tests/api/ -v
+```
+
+### 测试统计
+
+- 总测试数：60+
+- 单元测试：全部通过
+- 集成测试：需要 OPENAI_API_KEY
+
+## 开发
+
+### 后端开发
+
+```bash
+cd backend
+
+# 安装依赖
 uv sync
-uv run python main.py --port 8765
 
-# 2. 启动前端（新终端）
+# 运行测试
+uv run pytest
+
+# 启动开发服务器
+uv run python main.py
+```
+
+### 前端开发
+
+```bash
 cd frontend
+
+# 安装依赖
 npm install
+
+# 启动开发服务器
 npm run dev
 
-# 3. 启动 Electron（新终端）
-cd desktop
-npm install
-npm run dev
+# 构建生产版本
+npm run build
 ```
 
-### 构建桌面应用
+## MVP 完成情况
 
-```bash
-# 完整构建
-./scripts/build-all.sh
+- ✅ Task 1: 项目脚手架
+- ✅ Task 2: 可插拔记忆系统
+- ✅ Task 3: ArXiv 搜索工具
+- ✅ Task 4: LaTeX 解析工具
+- ✅ Task 5: 论文阅读子图
+- ✅ Task 6: 协作研究主工作流
+- ✅ Task 7: 研究交互界面
+- ✅ Task 8: 论文阅读器
+- ✅ Task 9: API 层与前后端集成
+- ⚠️ Task 10: Electron 打包（暂缓，Web 模式可用）
 
-# 或分步构建
-./scripts/build-frontend.sh   # 构建前端
-./scripts/build-backend.sh    # 打包 Python
-./scripts/build-desktop.sh    # 打包 Electron
-
-# 安装包位于 dist/desktop/
-```
-
-## 使用方式
-
-### 桌面应用（推荐）
-下载并安装适合你操作系统的版本：
-- Windows: `Labora-Setup-0.1.0.exe`
-- macOS: `Labora-0.1.0.dmg`
-- Linux: `Labora-0.1.0.AppImage`
-
-双击启动，无需安装 Python 或 Node.js。
-
-### CLI 模式（开发者）
-```bash
-# 安装
-pip install labora
-
-# 交互式研究助手
-labora chat
-
-# 执行文献研究
-labora research "Transformer 模型的最新进展" -o report.md
-
-# 阅读单篇论文
-labora read arxiv:2301.12345 --save-notes
-
-# 搜索论文
-labora search "attention mechanism" --source arxiv --year 2020-2024
-
-# 管理文献库
-labora library add paper.pdf --tags "NLP,Transformer"
-labora library search "BERT"
-
-# 启动 Web 服务
-labora serve
-```
-
-### Web 模式（开发者）
-```bash
-# 启动服务
-labora serve --port 8000
-
-# 访问 Web 界面
-# http://localhost:8000
-```
+详见 [MVP 任务清单](docs/mvp-tasks.md)
 
 ## 文档
 
 详细文档请查看 [docs/](docs/) 目录：
-
-### 核心设计文档（6 个）
-- [整体架构](docs/architecture.md) - 系统架构、技术选型、CLI/API 设计
-- [桌面应用打包](docs/desktop-packaging.md) - Electron + Python 打包方案
-- [文献研究工作流](docs/literature-workflow.md) - LangGraph 人机协作工作流
-- [记忆系统](docs/memory.md) - 可插拔的三层记忆架构
-- [测试方案](docs/testing.md) - 包含量化指标的完整测试方案
 - [MVP 任务清单](docs/mvp-tasks.md) - 10 个任务、每个任务含可验收标准
-
-### 快速链接
-- **技术栈**：Electron + React + Pretext + Python + uv + FastAPI + LangGraph
-- **核心功能**：文献检索、深度阅读、知识图谱、研究综述
-- **部署方式**：桌面应用（主推）、CLI、Web（可选）
+- [配置说明](docs/configuration.md) - API 密钥配置方式
 
 ## 许可证
 
