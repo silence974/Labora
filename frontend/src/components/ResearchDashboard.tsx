@@ -7,7 +7,7 @@ export function ResearchDashboard() {
     <div className="w-full h-screen bg-academic-bg flex flex-col overflow-hidden relative">
 
       {/* Header */}
-      <header className="bg-academic-panel border-b border-academic-border h-16 flex items-center justify-between px-6 shrink-0 shadow-sm z-10 relative">
+      <header className="bg-academic-panel border-b border-academic-border h-12 flex items-center justify-between shrink-0 shadow-sm z-10 relative" style={{ paddingLeft: '20px', paddingRight: '24px' }}>
         <div className="flex items-center gap-4">
           <div className="w-8 h-8 bg-academic-accent text-white rounded flex items-center justify-center font-serif font-bold text-lg">
             R
@@ -16,20 +16,9 @@ export function ResearchDashboard() {
         </div>
 
         <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2 text-academic-muted hover:text-academic-text cursor-pointer transition-colors">
-            <i className="fa-solid fa-cloud-arrow-up"></i>
-            <span>All changes saved</span>
-          </div>
-          <div className="h-6 w-px bg-academic-border"></div>
-          <button className="text-academic-muted hover:text-academic-accent transition-colors">
-            <i className="fa-solid fa-bell"></i>
-          </button>
           <button className="text-academic-muted hover:text-academic-accent transition-colors">
             <i className="fa-solid fa-gear"></i>
           </button>
-          <div className="w-8 h-8 rounded-full overflow-hidden border border-academic-border">
-            <img src="https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg" alt="User Avatar" className="w-full h-full object-cover" />
-          </div>
         </div>
       </header>
 
@@ -37,38 +26,38 @@ export function ResearchDashboard() {
       <main className="flex-1 flex overflow-hidden">
 
         {/* Leftmost Sidebar */}
-        <aside className="w-16 bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shrink-0 z-20 shadow-sm transition-all hover:w-48 group">
+        <aside className="w-12 bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shrink-0 z-20 shadow-sm transition-all hover:w-40 group">
           <div className="mb-6 w-full px-2">
-            <button className="w-full h-10 rounded-lg flex items-center justify-center text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
+            <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
               <i className="fa-solid fa-file-circle-plus"></i>
-              <span className="absolute left-12 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
+              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
             </button>
           </div>
 
           <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
             <div
-              className="w-full h-10 rounded-lg bg-academic-hover border border-academic-border flex items-center justify-center text-academic-accent cursor-pointer relative group/item"
+              className="w-full h-10 rounded-lg bg-academic-hover border border-academic-border flex items-center pl-3 text-academic-accent cursor-pointer relative group/item"
               onClick={() => setShowDocDetails(!showDocDetails)}
             >
               <i className="fa-solid fa-file-lines"></i>
-              <span className="absolute left-12 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
+              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
             </div>
 
-            <div className="w-full h-10 rounded-lg flex items-center justify-center text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors cursor-pointer relative group/item">
+            <div className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors cursor-pointer relative group/item">
               <i className="fa-regular fa-file-pdf"></i>
-              <span className="absolute left-12 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-names-none truncate w-28">Lit Review</span>
             </div>
 
-            <div className="w-full h-10 rounded-lg flex items-center justify-center text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors cursor-pointer relative group/item">
+            <div className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors cursor-pointer relative group/item">
               <i className="fa-regular fa-file-word"></i>
-              <span className="absolute left-12 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
+              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
             </div>
           </div>
 
           <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
-            <button className="w-full h-10 rounded-lg flex items-center justify-center text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
+            <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
               <i className="fa-solid fa-box-archive"></i>
-              <span className="absolute left-12 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
+              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
             </button>
           </div>
         </aside>
@@ -86,7 +75,7 @@ export function ResearchDashboard() {
 
 function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boolean; onCloseDetails: () => void }) {
   return (
-    <section className="flex-[1.2] flex flex-col bg-academic-bg border-r border-academic-border shrink-0 h-full overflow-hidden relative">
+    <section className="flex-[1.2] flex flex-col bg-academic-bg border-r border-academic-border shrink-0 h-full overflow-hidden relative !p-2">
 
       {/* Document Details Card */}
       {showDocDetails && (
@@ -122,20 +111,20 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
       )}
 
       {/* Editor Toolbar */}
-      <div className="bg-academic-panel border-b-2 border-academic-border p-3 px-6 flex items-center justify-between shrink-0">
+      <div className="bg-academic-panel border-b-2 border-academic-border flex items-center justify-between shrink-0" style={{ padding: '4px 24px' }}>
         <div className="flex items-center gap-1">
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif font-bold" title="Bold">B</button>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif italic" title="Italic">I</button>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif underline" title="Underline">U</button>
-          <div className="w-px h-4 bg-academic-border mx-1"></div>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors" title="Heading 1">H1</button>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors" title="Heading 2">H2</button>
-          <div className="w-px h-4 bg-academic-border mx-1"></div>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors"><i className="fa-solid fa-list-ul"></i></button>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors"><i className="fa-solid fa-list-ol"></i></button>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors"><i className="fa-solid fa-link"></i></button>
-          <div className="w-px h-4 bg-academic-border mx-1"></div>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-accent bg-red-50 hover:bg-red-100 transition-colors" title="Insert Math"><i className="fa-solid fa-square-root-variable"></i></button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif font-bold text-xs" title="Bold">B</button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif italic text-xs" title="Italic">I</button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif underline text-xs" title="Underline">U</button>
+          <div className="w-px h-3 bg-academic-border mx-1"></div>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs" title="Heading 1">H1</button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs" title="Heading 2">H2</button>
+          <div className="w-px h-3 bg-academic-border mx-1"></div>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-list-ul"></i></button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-list-ol"></i></button>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-link"></i></button>
+          <div className="w-px h-3 bg-academic-border mx-1"></div>
+          <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-accent bg-red-50 hover:bg-red-100 transition-colors text-xs" title="Insert Math"><i className="fa-solid fa-square-root-variable"></i></button>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-academic-muted bg-academic-hover px-2 py-1 rounded">LaTeX Ready</span>
@@ -143,23 +132,22 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
       </div>
 
       {/* Editor Area */}
-      <div className="flex-1 overflow-y-auto bg-white relative" style={{ margin: '24px !important' }}>
-        <div className="py-12 pl-20 pr-8">
-          <div className="max-w-2xl mx-auto">
+      <div className="flex-1 overflow-y-auto bg-white relative" style={{ padding: '32px' }}>
+        <div className="max-w-4xl mx-auto">
           <input
             type="text"
             defaultValue="Methodology: Comparing CNNs and Vision Transformers"
-            className="w-full font-serif text-2xl font-bold mb-8 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
+            className="w-full font-serif text-2xl font-bold !mb-3 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
             placeholder="Report Title..."
           />
 
-          <div className="font-serif text-sm leading-relaxed text-academic-text/90 space-y-6 px-8">
+          <div className="font-serif text-sm leading-relaxed text-academic-text/90 !space-y-2">
             <p>In this section, we analyze the fundamental differences between Convolutional Neural Networks (CNNs) and Vision Transformers (ViTs) in handling computer vision tasks.</p>
 
-            <h3 className="text-lg font-bold mt-6 mb-2">1. Receptive Fields and Inductive Bias</h3>
+            <h3 className="text-lg font-bold mt-6 mb-3">1. Receptive Fields and Inductive Bias</h3>
             <p>CNNs inherently possess a strong inductive bias towards translation invariance and locality, processing images through hierarchical local receptive fields. This makes them highly efficient for capturing local textures and edges early in the network.</p>
 
-            <div className="my-6 p-6 bg-academic-bg border border-academic-border rounded-lg font-mono text-xs text-academic-muted relative group">
+            <div className="my-5 p-5 bg-academic-bg border border-academic-border rounded-lg font-mono text-xs text-academic-muted relative group">
               <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
                 <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-copy"></i></button>
                 <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-play"></i></button>
@@ -177,7 +165,6 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
             <p>Conversely, as noted in recent literature, Vision Transformers rely on the self-attention mechanism, which globally connects all patches of an image from the very first layer. This allows ViTs to capture long-range dependencies immediately, reducing the inductive bias but requiring larger datasets for effective training.</p>
           </div>
         </div>
-        </div>
       </div>
 
       {/* Bottom Split - LLM Research Area */}
@@ -192,14 +179,11 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
 function ResearchProgress() {
   return (
     <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
-      <div className="p-3 border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0">
-        <h3 className="font-serif text-sm font-bold flex items-center gap-2">
+      <div className="border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0" style={{ padding: '6px 12px', height: '32px' }}>
+        <h3 className="font-serif text-xs font-bold flex items-center gap-2">
           <i className="fa-solid fa-bars-progress text-academic-accent text-xs"></i>
           Research Progress
         </h3>
-        <button className="text-academic-muted hover:text-academic-accent transition-colors text-xs flex items-center gap-1">
-          <i className="fa-solid fa-chevron-up"></i> Expand Logs
-        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -251,8 +235,8 @@ function ResearchProgress() {
 function AIChat() {
   return (
     <div className="w-1/2 flex flex-col bg-white">
-      <div className="p-3 border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0">
-        <h3 className="font-serif text-sm font-bold flex items-center gap-2">
+      <div className="border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0" style={{ padding: '6px 12px', height: '32px' }}>
+        <h3 className="font-serif text-xs font-bold flex items-center gap-2">
           <i className="fa-solid fa-robot text-academic-accent text-xs"></i>
           LLM Assistant
         </h3>
@@ -307,27 +291,22 @@ function AIChat() {
 
 function RightWorkspace() {
   return (
-    <section className="flex-1 flex flex-col bg-academic-bg p-6 pl-8 overflow-hidden relative border-l-2 border-academic-border">
+    <section className="flex-1 flex flex-col bg-academic-bg !p-2 overflow-hidden relative border-l-2 border-academic-border">
 
       {/* Toolbar */}
-      <div className="bg-academic-panel rounded-[12px] shadow-soft border border-academic-border p-2 mb-4 flex items-center justify-between shrink-0">
+      <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center shrink-0">
         <div className="flex items-center gap-1">
-          <button className="px-3 py-1.5 text-sm font-medium bg-academic-hover rounded-md text-academic-text">Viewer</button>
-          <button className="px-3 py-1.5 text-sm font-medium text-academic-muted hover:bg-academic-hover rounded-md transition-colors">Source (LaTeX)</button>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors" title="Zoom Out"><i className="fa-solid fa-magnifying-glass-minus"></i></button>
-          <span className="text-xs font-medium text-academic-muted w-12 text-center">100%</span>
-          <button className="w-8 h-8 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors" title="Zoom In"><i className="fa-solid fa-magnifying-glass-plus"></i></button>
-          <div className="w-px h-4 bg-academic-border mx-2"></div>
-          <button className="px-4 py-1.5 text-sm font-medium bg-academic-accent text-white rounded-md hover:bg-red-700 transition-colors shadow-sm">
-            Export PDF
+          <button className="px-3 py-1 text-sm font-medium border-b-2 border-academic-accent text-academic-text">Paper 1</button>
+          <button className="px-3 py-1 text-sm font-medium text-academic-muted hover:text-academic-text transition-colors">Paper 2</button>
+          <button className="px-3 py-1 text-sm font-medium text-academic-muted hover:text-academic-text transition-colors">Paper 3</button>
+          <button className="w-6 h-6 flex items-center justify-center text-academic-muted hover:text-academic-text transition-colors ml-2">
+            <i className="fa-solid fa-plus text-xs"></i>
           </button>
         </div>
       </div>
 
       {/* Split View Area */}
-      <div className="flex-1 flex gap-6 overflow-hidden">
+      <div className="flex-1 flex gap-2 overflow-hidden">
         <LaTeXViewer />
         <AnnotationPanel />
       </div>
@@ -337,7 +316,7 @@ function RightWorkspace() {
 
 function LaTeXViewer() {
   return (
-    <article className="flex-[2] bg-white rounded-[14px] shadow-soft border-2 border-academic-border overflow-y-auto p-12 relative">
+    <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto relative" style={{ padding: '20px 32px 32px 32px' }}>
       <div className="max-w-3xl mx-auto">
         <header className="text-center mb-12 border-b border-academic-border pb-8">
           <h1 className="font-serif text-3xl font-bold leading-tight mb-6">Transformers in Vision: A Comprehensive Survey</h1>
@@ -384,7 +363,7 @@ function LaTeXViewer() {
 
 function AnnotationPanel() {
   return (
-    <aside className="flex-1 bg-white rounded-[14px] shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
+    <aside className="flex-1 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
       <div className="p-4 border-b border-academic-border bg-academic-hover flex items-center justify-between">
         <h3 className="font-serif font-bold text-sm flex items-center gap-2">
           <i className="fa-regular fa-pen-to-square text-academic-accent"></i>
@@ -396,7 +375,7 @@ function AnnotationPanel() {
         </div>
       </div>
 
-      <div className="flex-1 p-6 overflow-y-auto space-y-4">
+      <div className="flex-1 p-6 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <div className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
           <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
             <span>Section 1. Introduction</span>
