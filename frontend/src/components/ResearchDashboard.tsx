@@ -7,7 +7,7 @@ export function ResearchDashboard() {
     <div className="w-full h-screen bg-academic-bg flex flex-col overflow-hidden relative">
 
       {/* Header */}
-      <header className="bg-academic-panel border-b border-academic-border h-12 flex items-center justify-between shrink-0 shadow-sm z-10 relative" style={{ paddingLeft: '20px', paddingRight: '24px' }}>
+      <header className="bg-academic-panel border-b border-academic-border h-12 flex items-center justify-between px-5 shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-4">
           <div className="w-8 h-8 bg-academic-accent text-white rounded flex items-center justify-center font-serif font-bold text-lg">
             R
@@ -15,11 +15,9 @@ export function ResearchDashboard() {
           <h1 className="font-serif text-xl font-bold tracking-tight">Research Assistant</h1>
         </div>
 
-        <div className="flex items-center gap-6 text-sm">
-          <button className="text-academic-muted hover:text-academic-accent transition-colors">
-            <i className="fa-solid fa-gear"></i>
-          </button>
-        </div>
+        <button className="text-academic-muted hover:text-academic-accent transition-colors">
+          <i className="fa-solid fa-gear"></i>
+        </button>
       </header>
 
       {/* Main Content */}
@@ -75,7 +73,7 @@ export function ResearchDashboard() {
 
 function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boolean; onCloseDetails: () => void }) {
   return (
-    <section className="flex-[1.2] flex flex-col bg-academic-bg border-r border-academic-border shrink-0 h-full overflow-hidden relative !p-2">
+    <section className="flex-[1.2] flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
 
       {/* Document Details Card */}
       {showDocDetails && (
@@ -111,7 +109,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
       )}
 
       {/* Editor Toolbar */}
-      <div className="bg-academic-panel border-b-2 border-academic-border flex items-center justify-between shrink-0" style={{ padding: '4px 24px' }}>
+      <div className="bg-academic-panel border-b-2 border-academic-border py-1 px-6 flex items-center justify-between">
         <div className="flex items-center gap-1">
           <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif font-bold text-xs" title="Bold">B</button>
           <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif italic text-xs" title="Italic">I</button>
@@ -126,22 +124,20 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
           <div className="w-px h-3 bg-academic-border mx-1"></div>
           <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-accent bg-red-50 hover:bg-red-100 transition-colors text-xs" title="Insert Math"><i className="fa-solid fa-square-root-variable"></i></button>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-academic-muted bg-academic-hover px-2 py-1 rounded">LaTeX Ready</span>
-        </div>
+        <span className="text-xs text-academic-muted bg-academic-hover px-2 py-1 rounded">LaTeX Ready</span>
       </div>
 
       {/* Editor Area */}
-      <div className="flex-1 overflow-y-auto bg-white relative" style={{ padding: '32px' }}>
+      <div className="flex-1 overflow-y-auto bg-white p-8">
         <div className="max-w-4xl mx-auto">
           <input
             type="text"
             defaultValue="Methodology: Comparing CNNs and Vision Transformers"
-            className="w-full font-serif text-2xl font-bold !mb-3 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
+            className="w-full font-serif text-2xl font-bold mb-3 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
             placeholder="Report Title..."
           />
 
-          <div className="font-serif text-sm leading-relaxed text-academic-text/90 !space-y-2">
+          <div className="font-serif text-sm leading-relaxed text-academic-text/90 space-y-2">
             <p>In this section, we analyze the fundamental differences between Convolutional Neural Networks (CNNs) and Vision Transformers (ViTs) in handling computer vision tasks.</p>
 
             <h3 className="text-lg font-bold mt-6 mb-3">1. Receptive Fields and Inductive Bias</h3>
@@ -179,7 +175,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails }: { showDocDetails: boo
 function ResearchProgress() {
   return (
     <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
-      <div className="border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0" style={{ padding: '6px 12px', height: '32px' }}>
+      <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
         <h3 className="font-serif text-xs font-bold flex items-center gap-2">
           <i className="fa-solid fa-bars-progress text-academic-accent text-xs"></i>
           Research Progress
@@ -235,7 +231,7 @@ function ResearchProgress() {
 function AIChat() {
   return (
     <div className="w-1/2 flex flex-col bg-white">
-      <div className="border-b border-academic-border bg-academic-hover flex items-center justify-between shrink-0" style={{ padding: '6px 12px', height: '32px' }}>
+      <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center justify-between px-3">
         <h3 className="font-serif text-xs font-bold flex items-center gap-2">
           <i className="fa-solid fa-robot text-academic-accent text-xs"></i>
           LLM Assistant
@@ -291,7 +287,7 @@ function AIChat() {
 
 function RightWorkspace() {
   return (
-    <section className="flex-1 flex flex-col bg-academic-bg !p-2 overflow-hidden relative border-l-2 border-academic-border">
+    <section className="flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
 
       {/* Toolbar */}
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center shrink-0">
@@ -316,7 +312,7 @@ function RightWorkspace() {
 
 function LaTeXViewer() {
   return (
-    <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto relative" style={{ padding: '20px 32px 32px 32px' }}>
+    <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto p-8 pt-5">
       <div className="max-w-3xl mx-auto">
         <header className="text-center mb-12 border-b border-academic-border pb-8">
           <h1 className="font-serif text-3xl font-bold leading-tight mb-6">Transformers in Vision: A Comprehensive Survey</h1>
@@ -362,20 +358,33 @@ function LaTeXViewer() {
 }
 
 function AnnotationPanel() {
+  const [isCollapsed, setIsCollapsed] = useState(false)
+
   return (
-    <aside className="flex-1 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
+    <aside className={`bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-all ${isCollapsed ? 'w-12' : 'flex-1'}`}>
       <div className="p-4 border-b border-academic-border bg-academic-hover flex items-center justify-between">
-        <h3 className="font-serif font-bold text-sm flex items-center gap-2">
+        <h3 className={`font-serif font-bold text-sm flex items-center gap-2 ${isCollapsed ? 'hidden' : ''}`}>
           <i className="fa-regular fa-pen-to-square text-academic-accent"></i>
           Reading Notes
         </h3>
         <div className="flex gap-2">
-          <button className="w-6 h-6 rounded flex items-center justify-center text-academic-muted hover:bg-white hover:shadow-sm transition-all"><i className="fa-solid fa-highlighter text-xs text-yellow-500"></i></button>
-          <button className="w-6 h-6 rounded flex items-center justify-center text-academic-muted hover:bg-white hover:shadow-sm transition-all"><i className="fa-solid fa-message text-xs"></i></button>
+          {!isCollapsed && (
+            <>
+              <button className="w-6 h-6 rounded flex items-center justify-center text-academic-muted hover:bg-white hover:shadow-sm transition-all"><i className="fa-solid fa-highlighter text-xs text-yellow-500"></i></button>
+              <button className="w-6 h-6 rounded flex items-center justify-center text-academic-muted hover:bg-white hover:shadow-sm transition-all"><i className="fa-solid fa-message text-xs"></i></button>
+            </>
+          )}
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="w-6 h-6 rounded flex items-center justify-center text-academic-muted hover:bg-white hover:shadow-sm transition-all"
+          >
+            <i className={`fa-solid ${isCollapsed ? 'fa-chevron-left' : 'fa-chevron-right'} text-xs`}></i>
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 p-6 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {!isCollapsed && (
+        <div className="flex-1 p-3 overflow-y-auto flex flex-col gap-2">
         <div className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
           <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
             <span>Section 1. Introduction</span>
@@ -400,6 +409,7 @@ function AnnotationPanel() {
           <p className="text-xs">Select text in the viewer to add a new annotation</p>
         </div>
       </div>
+      )}
     </aside>
   )
 }
