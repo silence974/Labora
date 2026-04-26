@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from labora.api.routes import health, research, papers
+from labora.api.routes import health, research, papers, deep_read
 
 
 def create_app() -> FastAPI:
@@ -17,5 +17,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(research.router, prefix="/api/research")
     app.include_router(papers.router, prefix="/api/papers")
+    app.include_router(deep_read.router, prefix="/api/deep-read")
 
     return app

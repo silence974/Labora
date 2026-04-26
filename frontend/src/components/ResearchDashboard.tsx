@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { deepReadApi } from '../api/deepRead'
+import type { DeepReadResult } from '../api/deepRead'
 
 export function ResearchDashboard() {
   const [showDocDetails, setShowDocDetails] = useState(false)
@@ -102,25 +104,36 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   setActiveLeftDoc: (doc: 'methodology' | 'litReview' | 'dataAnalysis') => void
 }) {
   const [deepReadProgress, setDeepReadProgress] = useState(0)
-  const [openReadResults, setOpenReadResults] = useState<string[]>(['result-1'])
-  const [activeReadResult, setActiveReadResult] = useState('result-1')
+  const [openReadResults, setOpenReadResults] = useState<string[]>([])
+  const [activeReadResult, setActiveReadResult] = useState<string | null>(null)
+  const [currentResult, setCurrentResult] = useState<DeepReadResult | null>(null)
 
   // Listen for deep read events
   useEffect(() => {
-    const handleStartDeepRead = () => {
+    const handleStartDeepRead = async () => {
       setActiveLeftDoc('litReview')
       setDeepReadProgress(0)
-      // Add new result to open tabs if not already there
-      const newResultId = `result-${Date.now()}`
-      setOpenReadResults(prev => [...prev, newResultId])
-      setActiveReadResult(newResultId)
-      // Simulate progress
-      let progress = 0
-      const interval = setInterval(() => {
-        progress += 10
-        setDeepReadProgress(progress)
-        if (progress >= 100) clearInterval(interval)
-      }, 500)
+
+      try {
+        // 启动深度阅读任务
+        const { task_id } = await deepReadApi.startDeepRead({
+          paper_title: 'Transformers in Vision: A Comprehensive Survey',
+          paper_url: 'https://arxiv.org/abs/2101.01169'
+        })
+
+        // 添加到打开的标签
+        setOpenReadResults(prev => [...prev, task_id])
+        setActiveReadResult(task_id)
+
+        // 轮询任务状态
+        const result = await deepReadApi.pollUntilComplete(task_id, (progress) => {
+          setDeepReadProgress(progress)
+        })
+
+        setCurrentResult(result)
+      } catch (error) {
+        console.error('Deep read failed:', error)
+      }
     }
 
     const handleJumpToResult = () => {
@@ -228,6 +241,12 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
               </div>
             </div>
           </div>
+
+          {/* Bottom Split - LLM Research Area - Only in Methodology */}
+          <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
+            <ResearchProgress />
+            <AIChat />
+          </div>
         </>
       ) : activeLeftDoc === 'litReview' ? (
         <div className="flex-1 flex gap-2">
@@ -331,7 +350,16 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
 
           {/* Right Column: Current Read Result Content */}
           <div className="flex-1 bg-white border-2 border-academic-border rounded overflow-hidden">
-            <DeepReadResultView progress={deepReadProgress} />
+            {openReadResults.length > 0 ? (
+              <DeepReadResultView progress={deepReadProgress} result={currentResult} />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center text-academic-muted">
+                  <i className="fa-solid fa-book-open text-4xl mb-3 opacity-30"></i>
+                  <p className="text-sm">点击"深度阅读"开始分析论文</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -342,17 +370,11 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
           </div>
         </div>
       )}
-
-      {/* Bottom Split - LLM Research Area */}
-      <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
-        <ResearchProgress />
-        <AIChat />
-      </div>
     </section>
   )
 }
 
-function DeepReadResultView({ progress }: { progress: number }) {
+function DeepReadResultView({ progress, result }: { progress: number; result: DeepReadResult | null }) {
   return (
     <div className="flex-1 bg-white overflow-y-auto p-8">
       <div className="max-w-4xl mx-auto">
@@ -380,31 +402,40 @@ function DeepReadResultView({ progress }: { progress: number }) {
         </div>
 
         {/* Results Section */}
-        {progress >= 100 && (
+        {progress >= 100 && result && (
           <div className="space-y-6">
+            <div className="p-6 bg-white border border-academic-border rounded-lg">
+              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">摘要</h4>
+              <p className="text-sm text-academic-text/90">{result.summary}</p>
+            </div>
+
             <div className="p-6 bg-white border border-academic-border rounded-lg">
               <h4 className="font-serif text-base font-bold mb-3 text-academic-text">核心观点</h4>
               <ul className="space-y-2 text-sm text-academic-text/90">
-                <li className="flex gap-2">
-                  <span className="text-academic-accent">•</span>
-                  <span>Transformers通过自注意力机制实现全局依赖建模</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="text-academic-accent">•</span>
-                  <span>相比CNN的局部感受野，ViT在第一层就能捕获长距离依赖</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="text-academic-accent">•</span>
-                  <span>ViT需要更大的数据集进行有效训练</span>
-                </li>
+                {result.key_points.map((point, index) => (
+                  <li key={index} className="flex gap-2">
+                    <span className="text-academic-accent">•</span>
+                    <span>{point}</span>
+                  </li>
+                ))}
               </ul>
             </div>
 
             <div className="p-6 bg-white border border-academic-border rounded-lg">
               <h4 className="font-serif text-base font-bold mb-3 text-academic-text">关键引用</h4>
-              <blockquote className="text-sm font-serif italic border-l-2 border-academic-accent pl-4 text-academic-text/80">
-                "The self-attention mechanism allows the model to capture long-range dependencies across the entire image..."
-              </blockquote>
+              {result.key_quotes.map((quote, index) => (
+                <div key={index} className="mb-4 last:mb-0">
+                  <blockquote className="text-sm font-serif italic border-l-2 border-academic-accent pl-4 text-academic-text/80 mb-1">
+                    {quote.text}
+                  </blockquote>
+                  <p className="text-xs text-academic-muted pl-4">— {quote.section}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-6 bg-white border border-academic-border rounded-lg">
+              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">引用统计</h4>
+              <p className="text-sm text-academic-text/90">本文共被引用 <span className="font-bold text-academic-accent">{result.citations_count}</span> 次</p>
             </div>
           </div>
         )}
@@ -528,27 +559,80 @@ function AIChat() {
 
 function RightWorkspace() {
   const [showSearch, setShowSearch] = useState(false)
+  const [openPapers, setOpenPapers] = useState<Array<{ id: string; title: string }>>([
+    { id: 'paper1', title: 'Transformers in Vision' },
+    { id: 'paper2', title: 'Attention Is All You Need' },
+    { id: 'paper3', title: 'An Image is Worth 16x16 Words' }
+  ])
+  const [activePaper, setActivePaper] = useState<string>('paper1')
+
+  const handleClosePaper = (paperId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newOpenPapers = openPapers.filter(p => p.id !== paperId)
+    setOpenPapers(newOpenPapers)
+
+    // 如果关闭的是当前激活的论文，切换到第一个可用的论文
+    if (activePaper === paperId && newOpenPapers.length > 0) {
+      setActivePaper(newOpenPapers[0].id)
+    }
+  }
+
+  const handleOpenPaper = (paperId: string, paperTitle: string) => {
+    // 检查论文是否已经打开
+    const isAlreadyOpen = openPapers.some(p => p.id === paperId)
+
+    if (!isAlreadyOpen) {
+      // 添加新论文到打开列表
+      setOpenPapers([...openPapers, { id: paperId, title: paperTitle }])
+    }
+
+    // 切换到该论文并关闭搜索页面
+    setActivePaper(paperId)
+    setShowSearch(false)
+  }
 
   return (
     <section className="flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
 
       {/* Toolbar */}
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-1">
-          <button
-            className={`px-3 py-1 text-sm font-medium transition-colors ${!showSearch ? 'border-b-2 border-academic-accent text-academic-text' : 'text-academic-muted hover:text-academic-text'}`}
-            onClick={() => setShowSearch(false)}
-          >
-            Paper 1
-          </button>
-          <button className="px-3 py-1 text-sm font-medium text-academic-muted hover:text-academic-text transition-colors">Paper 2</button>
-          <button className="px-3 py-1 text-sm font-medium text-academic-muted hover:text-academic-text transition-colors">Paper 3</button>
-          <button
-            className="w-6 h-6 flex items-center justify-center text-academic-muted hover:text-academic-text transition-colors ml-2"
-            onClick={() => setShowSearch(true)}
-          >
-            <i className="fa-solid fa-plus text-xs"></i>
-          </button>
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {openPapers.length === 0 ? (
+            <button
+              className="px-3 py-1 text-sm font-medium text-academic-muted border-b-2 border-academic-accent"
+            >
+              blank
+            </button>
+          ) : (
+            <>
+              {openPapers.map((paper) => (
+                <button
+                  key={paper.id}
+                  className={`px-3 py-1 text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap ${
+                    activePaper === paper.id && !showSearch
+                      ? 'border-b-2 border-academic-accent text-academic-text'
+                      : 'text-academic-muted hover:text-academic-text'
+                  }`}
+                  onClick={() => {
+                    setShowSearch(false)
+                    setActivePaper(paper.id)
+                  }}
+                >
+                  <span>{paper.title}</span>
+                  <i
+                    className="fa-solid fa-xmark text-xs hover:text-red-500 cursor-pointer"
+                    onClick={(e) => handleClosePaper(paper.id, e)}
+                  ></i>
+                </button>
+              ))}
+              <button
+                className="w-6 h-6 flex items-center justify-center text-academic-muted hover:text-academic-text transition-colors ml-2"
+                onClick={() => setShowSearch(true)}
+              >
+                <i className="fa-solid fa-plus text-xs"></i>
+              </button>
+            </>
+          )}
         </div>
 
         {/* Right side buttons */}
@@ -589,11 +673,11 @@ function RightWorkspace() {
       </div>
 
       {/* Split View Area */}
-      {showSearch ? (
-        <LiteratureSearch />
+      {showSearch || openPapers.length === 0 ? (
+        <LiteratureSearch onOpenPaper={handleOpenPaper} />
       ) : (
         <div className="flex-1 flex gap-2 overflow-hidden">
-          <LaTeXViewer />
+          <LaTeXViewer activePaper={activePaper} />
           <AnnotationPanel />
         </div>
       )}
@@ -601,7 +685,7 @@ function RightWorkspace() {
   )
 }
 
-function LiteratureSearch() {
+function LiteratureSearch({ onOpenPaper }: { onOpenPaper: (paperId: string, paperTitle: string) => void }) {
   return (
     <div className="flex-1 flex flex-col gap-2 overflow-hidden">
       {/* Search Section */}
@@ -667,7 +751,10 @@ function LiteratureSearch() {
 
         <div className="flex-1 p-4 overflow-y-auto">
           {/* History Item */}
-          <div className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer">
+          <div
+            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
+            onClick={() => onOpenPaper('paper1', 'Transformers in Vision')}
+          >
             <h4 className="text-sm font-medium text-academic-text mb-1">Transformers in Vision: A Comprehensive Survey</h4>
             <p className="text-xs text-academic-muted mb-2">Kai Han, Yunhe Wang • 2023</p>
             <div className="flex gap-2">
@@ -676,7 +763,10 @@ function LiteratureSearch() {
             </div>
           </div>
 
-          <div className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer">
+          <div
+            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
+            onClick={() => onOpenPaper('paper2', 'Attention Is All You Need')}
+          >
             <h4 className="text-sm font-medium text-academic-text mb-1">Attention Is All You Need</h4>
             <p className="text-xs text-academic-muted mb-2">Vaswani et al. • 2017</p>
             <div className="flex gap-2">
@@ -685,11 +775,26 @@ function LiteratureSearch() {
             </div>
           </div>
 
-          <div className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer">
+          <div
+            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
+            onClick={() => onOpenPaper('paper3', 'An Image is Worth 16x16 Words')}
+          >
             <h4 className="text-sm font-medium text-academic-text mb-1">An Image is Worth 16x16 Words</h4>
             <p className="text-xs text-academic-muted mb-2">Dosovitskiy et al. • 2021</p>
             <div className="flex gap-2">
               <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Vision Transformer</span>
+            </div>
+          </div>
+
+          <div
+            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
+            onClick={() => onOpenPaper('paper4', 'BERT: Pre-training of Deep Bidirectional Transformers')}
+          >
+            <h4 className="text-sm font-medium text-academic-text mb-1">BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</h4>
+            <p className="text-xs text-academic-muted mb-2">Devlin et al. • 2018</p>
+            <div className="flex gap-2">
+              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">NLP</span>
+              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Pre-training</span>
             </div>
           </div>
         </div>
@@ -698,35 +803,71 @@ function LiteratureSearch() {
   )
 }
 
-function LaTeXViewer() {
+function LaTeXViewer({ activePaper }: { activePaper: string }) {
+  // 根据不同的 paper 显示不同的内容
+  const paperContent: Record<string, {
+    title: string
+    authors: Array<{ name: string; affiliation: string }>
+    abstract: string
+    content: string
+  }> = {
+    paper1: {
+      title: 'Transformers in Vision: A Comprehensive Survey',
+      authors: [
+        { name: 'Kai Han', affiliation: "Noah's Ark Lab" },
+        { name: 'Yunhe Wang', affiliation: 'Huawei Technologies' }
+      ],
+      abstract: 'Transformer, first applied to the field of natural language processing, is a type of deep neural network mainly based on the self-attention mechanism. Thanks to its strong representation capabilities, researchers are looking at ways to apply transformer to computer vision tasks. In this paper, we review the application of transformer models in computer vision...',
+      content: 'Deep learning has achieved tremendous success in various computer vision tasks. The convolutional neural network (CNN) is the fundamental component of modern vision systems. However, recently, the Transformer architecture has shown great potential to become a strong alternative to CNNs.'
+    },
+    paper2: {
+      title: 'Attention Is All You Need',
+      authors: [
+        { name: 'Ashish Vaswani', affiliation: 'Google Brain' },
+        { name: 'Noam Shazeer', affiliation: 'Google Brain' }
+      ],
+      abstract: 'The dominant sequence transduction models are based on complex recurrent or convolutional neural networks. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.',
+      content: 'The Transformer follows this overall architecture using stacked self-attention and point-wise, fully connected layers for both the encoder and decoder. The attention function can be described as mapping a query and a set of key-value pairs to an output.'
+    },
+    paper3: {
+      title: 'An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale',
+      authors: [
+        { name: 'Alexey Dosovitskiy', affiliation: 'Google Research' },
+        { name: 'Lucas Beyer', affiliation: 'Google Research' }
+      ],
+      abstract: 'While the Transformer architecture has become the de-facto standard for natural language processing tasks, its applications to computer vision remain limited. In vision, attention is either applied in conjunction with convolutional networks, or used to replace certain components of convolutional networks.',
+      content: 'We show that this reliance on CNNs is not necessary and a pure transformer applied directly to sequences of image patches can perform very well on image classification tasks. When pre-trained on large amounts of data and transferred to multiple mid-sized or small image recognition benchmarks, Vision Transformer (ViT) attains excellent results.'
+    }
+  }
+
+  const paper = paperContent[activePaper] || paperContent.paper1
+
   return (
     <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto p-8 pt-5">
       <div className="max-w-3xl mx-auto">
         <header className="text-center mb-12 border-b border-academic-border pb-8">
-          <h1 className="font-serif text-3xl font-bold leading-tight mb-6">Transformers in Vision: A Comprehensive Survey</h1>
+          <h1 className="font-serif text-3xl font-bold leading-tight mb-6">{paper.title}</h1>
           <div className="flex justify-center gap-8 text-sm font-serif">
-            <div className="text-center">
-              <p className="font-bold">Kai Han</p>
-              <p className="text-academic-muted text-xs mt-1">Noah's Ark Lab</p>
-            </div>
-            <div className="text-center">
-              <p className="font-bold">Yunhe Wang</p>
-              <p className="text-academic-muted text-xs mt-1">Huawei Technologies</p>
-            </div>
+            {paper.authors.map((author, index) => (
+              <div key={index} className="text-center">
+                <p className="font-bold">{author.name}</p>
+                <p className="text-academic-muted text-xs mt-1">{author.affiliation}</p>
+              </div>
+            ))}
           </div>
         </header>
 
         <section className="mb-10">
           <h2 className="font-serif text-lg font-bold mb-4 uppercase tracking-wider text-center">Abstract</h2>
           <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90">
-            Transformer, first applied to the field of natural language processing, is a type of deep neural network mainly based on the self-attention mechanism. Thanks to its strong representation capabilities, researchers are looking at ways to apply transformer to computer vision tasks. In this paper, we review the application of transformer models in computer vision...
+            {paper.abstract}
           </p>
         </section>
 
         <section className="mb-10">
           <h2 className="font-serif text-xl font-bold mb-4 border-b border-academic-border pb-2">1. Introduction</h2>
           <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90 mb-4">
-            Deep learning has achieved tremendous success in various computer vision tasks. The convolutional neural network (CNN) is the fundamental component of modern vision systems. However, recently, the Transformer architecture has shown great potential to become a strong alternative to CNNs.
+            {paper.content}
           </p>
 
           <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90 bg-yellow-50 border-l-2 border-yellow-400 pl-3 py-1 cursor-pointer hover:bg-yellow-100 transition-colors">
