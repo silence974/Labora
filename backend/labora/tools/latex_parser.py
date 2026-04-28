@@ -2,13 +2,17 @@ import re
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Set, Union
 import urllib.request
 from langchain_core.tools import tool
 
 
 def _clean_latex(text: str) -> str:
     """清理 LaTeX 命令，提取纯文本"""
+    paragraph_break = "__LABORA_PARAGRAPH_BREAK__"
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n\s*\n+", paragraph_break, text)
+
     # 移除常见的 LaTeX 命令
     text = re.sub(r"\\cite\{[^}]*\}", "", text)  # 引用
     text = re.sub(r"\\ref\{[^}]*\}", "", text)  # 引用
@@ -20,56 +24,209 @@ def _clean_latex(text: str) -> str:
     text = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", text)  # 简单命令
     text = re.sub(r"\\[a-zA-Z]+", "", text)  # 无参数命令
     text = re.sub(r"[{}]", "", text)  # 花括号
-    text = re.sub(r"\s+", " ", text)  # 多余空白
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace(paragraph_break, "\n\n")
+    text = re.sub(r"(?:\n\s*){3,}", "\n\n", text)
 
     return text.strip()
 
 
+SECTION_HEADING_PATTERN = re.compile(
+    r"\\(?P<command>section|subsection|subsubsection|paragraph)\*?\{(?P<title>[^}]*)\}",
+    re.IGNORECASE,
+)
+
+
+def _slugify_title(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    return slug or "section"
+
+
+def _canonical_section_key(title: str) -> str:
+    slug = _slugify_title(title)
+
+    if slug == "introduction":
+        return "introduction"
+    if slug in {"method", "methods", "approach", "methodology"}:
+        return "method"
+    if slug in {"results", "result", "experiments", "experiment", "evaluation"}:
+        return "results"
+    if slug in {"conclusion", "conclusions", "discussion"}:
+        return "conclusion"
+
+    return slug
+
+
+def _make_unique_section_key(base_key: str, sections: Dict[str, str]) -> str:
+    key = base_key
+    suffix = 2
+    while key in sections:
+        key = f"{base_key}_{suffix}"
+        suffix += 1
+    return key
+
+
+def _extract_abstract(latex_content: str) -> Optional[str]:
+    for pattern in [
+        r"\\begin\{abstract\}(.*?)\\end\{abstract\}",
+        r"\\abstract\{(.*?)\}",
+    ]:
+        match = re.search(pattern, latex_content, re.DOTALL | re.IGNORECASE)
+        if not match:
+            continue
+
+        clean_text = _clean_latex(match.group(1))
+        if clean_text:
+            return clean_text.strip()
+
+    return None
+
+
+def _extract_document_body(latex_content: str) -> str:
+    document_match = re.search(
+        r"\\begin\{document\}(.*?)\\end\{document\}",
+        latex_content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if document_match:
+        return document_match.group(1)
+    return latex_content
+
+
 def _parse_sections(latex_content: str) -> Dict[str, str]:
-    """解析 LaTeX 内容，提取各章节"""
-    # 预处理：移除注释
-    latex_content = re.sub(r"%.*", "", latex_content)
+    """解析 LaTeX 内容，提取按出现顺序排列的全部章节。"""
+    latex_content = re.sub(r"(?<!\\)%.*", "", latex_content)
+    document_body = _extract_document_body(latex_content)
+    sections: Dict[str, str] = {}
 
-    section_patterns = {
-        "abstract": [
-            r"\\begin\{abstract\}(.*?)\\end\{abstract\}",
-            r"\\abstract\{(.*?)\}",
-        ],
-        "introduction": [
-            r"\\section\*?\{Introduction\}(.*?)(?=\\section|\Z)",
-            r"\\section\*?\{INTRODUCTION\}(.*?)(?=\\section|\Z)",
-        ],
-        "method": [
-            r"\\section\*?\{Method[s]?\}(.*?)(?=\\section|\Z)",
-            r"\\section\*?\{Approach\}(.*?)(?=\\section|\Z)",
-            r"\\section\*?\{Methodology\}(.*?)(?=\\section|\Z)",
-        ],
-        "results": [
-            r"\\section\*?\{Results?\}(.*?)(?=\\section|\Z)",
-            r"\\section\*?\{Experiments?\}(.*?)(?=\\section|\Z)",
-        ],
-        "conclusion": [
-            r"\\section\*?\{Conclusion[s]?\}(.*?)(?=\\section|\Z)",
-            r"\\section\*?\{Discussion\}(.*?)(?=\\section|\Z)",
-        ],
-    }
+    abstract = _extract_abstract(document_body) or _extract_abstract(latex_content)
+    if abstract:
+        sections["abstract"] = abstract
 
-    sections = {}
+    heading_matches = list(SECTION_HEADING_PATTERN.finditer(document_body))
+    for index, match in enumerate(heading_matches):
+        title = match.group("title").strip()
+        if not title:
+            continue
 
-    for section_name, patterns in section_patterns.items():
-        for pattern in patterns:
-            match = re.search(pattern, latex_content, re.DOTALL | re.IGNORECASE)
-            if match:
-                raw_text = match.group(1)
-                clean_text = _clean_latex(raw_text)
-                sections[section_name] = clean_text.strip()
-                break
+        start = match.end()
+        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(document_body)
+        content = _clean_latex(document_body[start:end]).strip()
+        if not content:
+            continue
 
-    # 如果没有提取到任何章节，返回全文
-    if not sections:
-        sections["full_text"] = _clean_latex(latex_content)
+        base_key = _canonical_section_key(title)
+        if base_key in sections:
+            title_key = _slugify_title(title)
+            if title_key != base_key and title_key not in sections:
+                key = title_key
+            else:
+                key = _make_unique_section_key(title_key, sections)
+        else:
+            key = base_key
 
-    return sections
+        sections[key] = content
+
+    if sections:
+        return sections
+
+    full_text = _clean_latex(document_body)
+    if full_text:
+        return {"full_text": full_text}
+
+    return {}
+
+
+def _extract_source_archive(archive_path: Path, target_dir: Path) -> None:
+    """解压源码包；如果下载结果本身就是 .tex 文本，则写成主文件。"""
+    try:
+        with tarfile.open(archive_path, "r:*") as tar:
+            tar.extractall(target_dir, filter="data")
+            return
+    except tarfile.ReadError:
+        pass
+
+    try:
+        raw_text = archive_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        raise RuntimeError("Failed to read downloaded source package") from exc
+
+    fallback_tex = target_dir / "main.tex"
+    fallback_tex.write_text(raw_text, encoding="utf-8")
+
+
+def _resolve_include_path(base_dir: Path, target: str) -> Optional[Path]:
+    candidate = (base_dir / target).resolve()
+    candidates = [candidate]
+
+    if not candidate.suffix:
+        candidates.append(candidate.with_suffix(".tex"))
+
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+
+    return None
+
+
+def _expand_includes(tex_file: Path, visited: Optional[Set[Path]] = None) -> str:
+    visited = visited or set()
+    resolved = tex_file.resolve()
+    if resolved in visited:
+        return ""
+
+    visited.add(resolved)
+    content = tex_file.read_text(encoding="utf-8", errors="ignore")
+
+    include_pattern = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+
+    def replace_include(match: re.Match[str]) -> str:
+        include_path = _resolve_include_path(tex_file.parent, match.group(1).strip())
+        if not include_path:
+            return "\n"
+        return "\n" + _expand_includes(include_path, visited) + "\n"
+
+    return include_pattern.sub(replace_include, content)
+
+
+def _find_main_tex(source_dir: Path) -> Path:
+    tex_files = sorted(source_dir.rglob("*.tex"))
+    if not tex_files:
+        raise RuntimeError("No .tex file found in source package")
+
+    def score(tex_file: Path) -> tuple[int, int]:
+        file_score = 0
+        stem = tex_file.stem.lower()
+
+        if any(keyword in stem for keyword in ["main", "paper", "article", "ms"]):
+            file_score += 5
+
+        preview = tex_file.read_text(encoding="utf-8", errors="ignore")[:20000]
+        if "\\documentclass" in preview:
+            file_score += 10
+        if "\\begin{document}" in preview:
+            file_score += 6
+
+        depth_penalty = len(tex_file.relative_to(source_dir).parts)
+        return file_score, -depth_penalty
+
+    return max(tex_files, key=score)
+
+
+def parse_latex_from_archive(archive_path: Union[str, Path]) -> Dict[str, str]:
+    """从本地源码归档中解析 LaTeX 内容。"""
+    archive = Path(archive_path)
+    if not archive.exists():
+        raise RuntimeError(f"Source archive not found: {archive}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _extract_source_archive(archive, tmpdir_path)
+        main_tex = _find_main_tex(tmpdir_path)
+        content = _expand_includes(main_tex)
+        return _parse_sections(content)
 
 
 @tool
@@ -90,36 +247,12 @@ def parse_latex_from_arxiv(arxiv_id: str) -> Dict[str, str]:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
-            tar_path = tmpdir_path / "source.tar.gz"
+            tar_path = tmpdir_path / "source.tar"
 
             # 下载源码包
             urllib.request.urlretrieve(source_url, tar_path)
 
-            # 解压
-            with tarfile.open(tar_path, "r:gz") as tar:
-                tar.extractall(tmpdir_path, filter='data')
-
-            # 查找主 .tex 文件
-            tex_files = list(tmpdir_path.glob("*.tex"))
-
-            if not tex_files:
-                raise RuntimeError("No .tex file found in source package")
-
-            # 优先选择文件名包含 main/paper 的，否则选第一个
-            main_tex = None
-            for tex_file in tex_files:
-                if any(keyword in tex_file.stem.lower() for keyword in ["main", "paper"]):
-                    main_tex = tex_file
-                    break
-
-            if not main_tex:
-                main_tex = tex_files[0]
-
-            # 读取内容
-            with open(main_tex, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-
-            return _parse_sections(content)
+            return parse_latex_from_archive(tar_path)
 
     except Exception as e:
         raise RuntimeError(f"Failed to parse LaTeX for {arxiv_id}: {str(e)}") from e
@@ -136,7 +269,6 @@ def parse_latex_from_file(tex_file_path: str) -> Dict[str, str]:
     Returns:
         包含各章节内容的字典
     """
-    with open(tex_file_path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-
+    tex_file = Path(tex_file_path)
+    content = _expand_includes(tex_file)
     return _parse_sections(content)

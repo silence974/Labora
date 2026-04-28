@@ -3,11 +3,14 @@ API 路由测试
 """
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 from unittest.mock import patch, Mock
 import time
+from urllib.parse import urlparse
 
 from labora.api.app import create_app
+from labora.services import LiteratureLibrary
 
 
 @pytest.fixture
@@ -21,6 +24,17 @@ def client():
 def mock_env(monkeypatch):
     """设置测试环境变量"""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+
+@pytest.fixture
+def temp_literature_library(tmp_path, monkeypatch):
+    """使用临时目录隔离文献库数据"""
+    library = LiteratureLibrary(
+        db_path=str(tmp_path / "literature.db"),
+        download_dir=str(tmp_path / "papers"),
+    )
+    monkeypatch.setattr("labora.api.routes.literature.library", library)
+    return library
 
 
 class TestHealthAPI:
@@ -184,3 +198,278 @@ class TestResearchAPI:
         assert response.status_code == 200
         data = response.json()
         assert "tasks" in data
+
+
+class FakeDownloadResponse:
+    def __init__(self, content: bytes = b"%PDF-1.4 test"):
+        self.content = content
+
+    def raise_for_status(self):
+        return None
+
+
+class FakeAsyncClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url):
+        return FakeDownloadResponse()
+
+
+class TestLiteratureAPI:
+    """测试文献搜索与下载 API"""
+
+    @patch("labora.api.routes.literature._search_arxiv_paginated")
+    def test_search_literature_online(self, mock_search, client, temp_literature_library):
+        """测试联网搜索文献"""
+        mock_search.return_value = {
+            "items": [
+                {
+                    "id": "arxiv:1706.03762",
+                    "paper_id": "1706.03762",
+                    "arxiv_id": "1706.03762",
+                    "title": "Attention Is All You Need",
+                    "abstract": "Test abstract",
+                    "authors": ["Ashish Vaswani", "Noam Shazeer"],
+                    "year": 2017,
+                    "pdf_url": "https://arxiv.org/pdf/1706.03762.pdf",
+                    "categories": ["cs.CL", "cs.LG"],
+                    "primary_category": "cs.CL",
+                    "source": "arXiv",
+                    "url": "https://arxiv.org/abs/1706.03762",
+                }
+            ],
+            "total": 37,
+            "page": 2,
+            "page_size": 10,
+            "total_pages": 4,
+            "has_prev": True,
+            "has_next": True,
+        }
+
+        response = client.post(
+            "/api/literature/search",
+            json={"query": "attention", "page": 2, "page_size": 10, "online": True},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 37
+        assert data["page"] == 2
+        assert data["page_size"] == 10
+        assert data["total_pages"] == 4
+        assert data["has_prev"] is True
+        assert data["has_next"] is True
+        assert data["results"][0]["paper_id"] == "1706.03762"
+        assert data["results"][0]["is_downloaded"] is False
+
+    @patch("labora.api.routes.literature._search_arxiv_paginated")
+    def test_search_literature_online_rate_limited_falls_back_to_local(
+        self,
+        mock_search,
+        client,
+        temp_literature_library,
+    ):
+        """测试联网搜索遇到 arXiv 429 时回退到本地缓存"""
+        temp_literature_library.upsert_paper(
+            {
+                "id": "arxiv:2501.00001",
+                "paper_id": "2501.00001",
+                "arxiv_id": "2501.00001",
+                "title": "LLM Cached Paper",
+                "abstract": "Cached abstract",
+                "authors": ["Test Author"],
+                "year": "2025",
+                "source": "arXiv",
+                "tags": ["cs.LG"],
+            }
+        )
+
+        request = httpx.Request("GET", "https://export.arxiv.org/api/query")
+        response = httpx.Response(429, request=request)
+        mock_search.side_effect = httpx.HTTPStatusError(
+            "rate limited",
+            request=request,
+            response=response,
+        )
+
+        api_response = client.post(
+            "/api/literature/search",
+            json={"query": "LLM", "page": 1, "page_size": 10, "online": True},
+        )
+
+        assert api_response.status_code == 200
+        data = api_response.json()
+        assert data["notice"] is not None
+        assert "rate limiting" in data["notice"]
+        assert len(data["results"]) == 1
+        assert data["results"][0]["title"] == "LLM Cached Paper"
+
+    def test_search_literature_local_pagination(self, client, temp_literature_library):
+        """测试本地搜索分页"""
+        for index in range(1, 6):
+            temp_literature_library.upsert_paper(
+                {
+                    "id": f"arxiv:2501.0000{index}",
+                    "paper_id": f"2501.0000{index}",
+                    "arxiv_id": f"2501.0000{index}",
+                    "title": f"LLM Systems Paper {index}",
+                    "abstract": "Local paper",
+                    "authors": ["Test Author"],
+                    "year": "2025",
+                    "source": "arXiv",
+                    "tags": ["cs.LG"],
+                },
+                mark_accessed=True,
+            )
+
+        response = client.post(
+            "/api/literature/search",
+            json={"query": "LLM", "page": 2, "page_size": 2, "online": False},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 5
+        assert data["page"] == 2
+        assert data["page_size"] == 2
+        assert data["total_pages"] == 3
+        assert data["has_prev"] is True
+        assert data["has_next"] is True
+        assert len(data["results"]) == 2
+
+    @patch("labora.api.routes.literature._load_original_content")
+    @patch("labora.api.routes.literature.arxiv_get_paper")
+    def test_get_paper_detail_records_recent(
+        self,
+        mock_get_paper,
+        mock_load_original_content,
+        client,
+        temp_literature_library,
+    ):
+        """测试打开论文详情后会写入最近记录"""
+        mock_load_original_content.return_value = {
+            "original_sections": [
+                {
+                    "key": "introduction",
+                    "title": "Introduction",
+                    "content": "This is the original introduction.",
+                }
+            ],
+            "original_text": "Introduction\nThis is the original introduction.",
+            "content_source": "arxiv_latex",
+            "content_error": None,
+        }
+        mock_get_paper.invoke.return_value = {
+            "id": "arxiv:1706.03762",
+            "arxiv_id": "1706.03762",
+            "title": "Attention Is All You Need",
+            "abstract": "Test abstract",
+            "authors": ["Ashish Vaswani", "Noam Shazeer"],
+            "year": 2017,
+            "pdf_url": "https://arxiv.org/pdf/1706.03762.pdf",
+            "published": "2017-06-12T00:00:00",
+        }
+
+        detail_response = client.get("/api/literature/papers/1706.03762")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["paper_id"] == "1706.03762"
+        assert detail["title"] == "Attention Is All You Need"
+        assert detail["original_sections"][0]["title"] == "Introduction"
+        assert detail["content_source"] == "arxiv_latex"
+
+        recent_response = client.get("/api/literature/recent")
+        assert recent_response.status_code == 200
+        recent = recent_response.json()["papers"]
+        assert len(recent) == 1
+        assert recent[0]["paper_id"] == "1706.03762"
+
+    @patch("labora.api.routes.literature.arxiv_get_paper")
+    def test_get_paper_detail_auto_downloads_latex(
+        self,
+        mock_get_paper,
+        client,
+        temp_literature_library,
+        monkeypatch,
+    ):
+        """测试打开未下载论文时会自动缓存 LaTeX 源码"""
+        mock_get_paper.invoke.return_value = {
+            "id": "arxiv:1706.03762",
+            "arxiv_id": "1706.03762",
+            "title": "Attention Is All You Need",
+            "abstract": "Test abstract",
+            "authors": ["Ashish Vaswani", "Noam Shazeer"],
+            "year": 2017,
+            "source_url": "https://arxiv.org/e-print/1706.03762",
+        }
+
+        async def fake_download_binary(url, destination):
+            destination.write_text(
+                "\\begin{abstract}Test abstract\\end{abstract}\\section{Introduction}Test intro",
+                encoding="utf-8",
+            )
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature._download_binary",
+            fake_download_binary,
+        )
+
+        detail_response = client.get("/api/literature/papers/1706.03762")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["paper_id"] == "1706.03762"
+        assert detail["is_downloaded"] is True
+        assert detail["local_source_url"].endswith("/api/literature/files/1706.03762")
+        assert detail["content_source"] == "local_latex"
+        assert detail["original_sections"][0]["title"] == "Abstract"
+
+        stored_file = temp_literature_library.resolve_download_path("1706.03762")
+        assert stored_file.exists()
+
+    @patch("labora.api.routes.literature.arxiv_get_paper")
+    def test_download_literature(
+        self,
+        mock_get_paper,
+        client,
+        temp_literature_library,
+        monkeypatch,
+    ):
+        """测试下载文献并通过本地文件端点访问"""
+        mock_get_paper.invoke.return_value = {
+            "id": "arxiv:1706.03762",
+            "arxiv_id": "1706.03762",
+            "title": "Attention Is All You Need",
+            "abstract": "Test abstract",
+            "authors": ["Ashish Vaswani", "Noam Shazeer"],
+            "year": 2017,
+            "pdf_url": "https://arxiv.org/pdf/1706.03762.pdf",
+        }
+        monkeypatch.setattr(
+            "labora.api.routes.literature.httpx.AsyncClient",
+            FakeAsyncClient,
+        )
+
+        download_response = client.get("/api/literature/download/1706.03762?source=arXiv")
+        assert download_response.status_code == 200
+        payload = download_response.json()
+        assert payload["paper_id"] == "1706.03762"
+        assert payload["local_source_url"].endswith("/api/literature/files/1706.03762")
+
+        stored_file = temp_literature_library.resolve_download_path("1706.03762")
+        assert stored_file.exists()
+
+        file_path = urlparse(payload["local_source_url"]).path
+        file_response = client.get(file_path)
+        assert file_response.status_code == 200
+        assert file_response.headers["content-type"].startswith("application/")
+
+        recent_response = client.get("/api/literature/recent")
+        recent = recent_response.json()["papers"]
+        assert recent[0]["is_downloaded"] is True

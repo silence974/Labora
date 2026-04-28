@@ -171,3 +171,38 @@ We discuss the results.
 
         # Discussion 应该被识别为 conclusion
         assert "conclusion" in sections
+
+    def test_parse_all_sections_in_order(self):
+        """测试保留全部章节并维持原始顺序"""
+        latex_content = r"""
+\begin{abstract}
+Abstract text.
+\end{abstract}
+
+\section{Background}
+Background text.
+
+\section{Related Work}
+Related work text.
+
+\section{Method}
+Method text.
+
+\subsection{Training Details}
+Training details text.
+
+\section{Appendix}
+Appendix text.
+"""
+        sections = _parse_sections(latex_content)
+
+        assert list(sections.keys()) == [
+            "abstract",
+            "background",
+            "related_work",
+            "method",
+            "training_details",
+            "appendix",
+        ]
+        assert sections["related_work"] == "Related work text."
+        assert sections["training_details"] == "Training details text."

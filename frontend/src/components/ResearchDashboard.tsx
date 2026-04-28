@@ -1,6 +1,236 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import { deepReadApi } from '../api/deepRead'
 import type { DeepReadResult } from '../api/deepRead'
+import { literatureApi } from '../api/literature'
+import type { LiteratureDetail, LiteratureItem, RecentPaper } from '../api/literature'
+
+interface StartDeepReadDetail {
+  paperTitle?: string
+  paperUrl?: string
+  paperContent?: string
+}
+
+function openDownloadLink(url: string) {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+interface RenderedPaperPage {
+  id: string
+  sectionKey: string
+  sectionTitle: string
+  content: string
+  pageNumber: number
+  isContinuation: boolean
+}
+
+const INITIAL_RENDERED_PAGES = 4
+const RENDER_PAGE_BATCH = 4
+const MAX_CHARS_PER_PAGE = 2600
+
+function splitOversizedBlock(block: string, maxChars: number): string[] {
+  if (block.length <= maxChars) {
+    return [block]
+  }
+
+  const sentenceParts =
+    block.match(/[^.!?]+(?:[.!?]+|$)/g)?.map((part) => part.trim()).filter(Boolean) ?? [block]
+
+  const chunks: string[] = []
+  let currentChunk = ''
+
+  const pushChunk = () => {
+    const normalized = currentChunk.trim()
+    if (normalized) {
+      chunks.push(normalized)
+    }
+    currentChunk = ''
+  }
+
+  for (const sentence of sentenceParts) {
+    if (sentence.length > maxChars) {
+      pushChunk()
+
+      const words = sentence.split(/\s+/).filter(Boolean)
+      let wordChunk = ''
+      for (const word of words) {
+        const candidate = wordChunk ? `${wordChunk} ${word}` : word
+        if (candidate.length > maxChars && wordChunk) {
+          chunks.push(wordChunk)
+          wordChunk = word
+        } else {
+          wordChunk = candidate
+        }
+      }
+      if (wordChunk) {
+        chunks.push(wordChunk)
+      }
+      continue
+    }
+
+    const candidate = currentChunk ? `${currentChunk} ${sentence}` : sentence
+    if (candidate.length > maxChars && currentChunk) {
+      pushChunk()
+      currentChunk = sentence
+    } else {
+      currentChunk = candidate
+    }
+  }
+
+  pushChunk()
+  return chunks
+}
+
+function splitContentIntoPages(content: string, maxChars: number = MAX_CHARS_PER_PAGE): string[] {
+  const normalized = content.replace(/\r\n/g, '\n').trim()
+  if (!normalized) {
+    return []
+  }
+
+  const rawBlocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+
+  const blocks = rawBlocks.length > 0 ? rawBlocks : [normalized]
+  const pages: string[] = []
+  let currentPage = ''
+
+  const pushPage = () => {
+    const page = currentPage.trim()
+    if (page) {
+      pages.push(page)
+    }
+    currentPage = ''
+  }
+
+  for (const block of blocks) {
+    const candidate = currentPage ? `${currentPage}\n\n${block}` : block
+    if (candidate.length <= maxChars) {
+      currentPage = candidate
+      continue
+    }
+
+    if (currentPage) {
+      pushPage()
+    }
+
+    const blockPages = splitOversizedBlock(block, maxChars)
+    if (blockPages.length === 1) {
+      currentPage = blockPages[0]
+      continue
+    }
+
+    for (let index = 0; index < blockPages.length - 1; index += 1) {
+      pages.push(blockPages[index])
+    }
+    currentPage = blockPages[blockPages.length - 1]
+  }
+
+  pushPage()
+  return pages
+}
+
+function buildRenderedPaperPages(paper: LiteratureDetail): RenderedPaperPage[] {
+  let pageNumber = 1
+  const pages: RenderedPaperPage[] = []
+
+  for (const section of paper.original_sections) {
+    const chunks = splitContentIntoPages(section.content)
+    for (let index = 0; index < chunks.length; index += 1) {
+      pages.push({
+        id: `${paper.paper_id}-${section.key}-${index + 1}`,
+        sectionKey: section.key,
+        sectionTitle: section.title,
+        content: chunks[index],
+        pageNumber,
+        isContinuation: index > 0,
+      })
+      pageNumber += 1
+    }
+  }
+
+  return pages
+}
+
+function LazyPaperPages({ paper }: { paper: LiteratureDetail }) {
+  const allPages = buildRenderedPaperPages(paper)
+  const [visiblePageCount, setVisiblePageCount] = useState(
+    Math.min(INITIAL_RENDERED_PAGES, allPages.length),
+  )
+  const loadMoreRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    setVisiblePageCount(Math.min(INITIAL_RENDERED_PAGES, allPages.length))
+  }, [paper.paper_id, allPages.length])
+
+  useEffect(() => {
+    const node = loadMoreRef.current
+    if (!node || visiblePageCount >= allPages.length) {
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisiblePageCount((current) => Math.min(current + RENDER_PAGE_BATCH, allPages.length))
+        }
+      },
+      {
+        rootMargin: '1200px 0px',
+      },
+    )
+
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [allPages.length, paper.paper_id, visiblePageCount])
+
+  const visiblePages = allPages.slice(0, visiblePageCount)
+
+  return (
+    <>
+      <div className="space-y-8">
+        {visiblePages.map((page) => (
+          <section
+            key={page.id}
+            className="rounded-xl border border-academic-border bg-white p-6 shadow-sm"
+          >
+            <div className="mb-4 flex items-start justify-between gap-4 border-b border-academic-border pb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-academic-muted">
+                  {page.sectionTitle}
+                  {page.isContinuation ? ' · Continued' : ''}
+                </p>
+                <h2 className="mt-1 font-serif text-xl font-bold text-academic-text">
+                  {page.sectionTitle}
+                </h2>
+              </div>
+              <span className="shrink-0 rounded-full bg-academic-hover px-2.5 py-1 text-[11px] text-academic-muted">
+                Page {page.pageNumber}
+              </span>
+            </div>
+            <div className="whitespace-pre-wrap font-serif text-[15px] leading-8 text-academic-text/90">
+              {page.content}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      {visiblePageCount < allPages.length ? (
+        <div
+          ref={loadMoreRef}
+          className="py-8 text-center text-xs text-academic-muted"
+        >
+          正在按需渲染后续页面… 还剩 {allPages.length - visiblePageCount} 页
+        </div>
+      ) : allPages.length > 0 ? (
+        <div className="py-6 text-center text-xs text-academic-muted">
+          全文共 {allPages.length} 页，已全部渲染完成。
+        </div>
+      ) : null}
+    </>
+  )
+}
 
 export function ResearchDashboard() {
   const [showDocDetails, setShowDocDetails] = useState(false)
@@ -110,15 +340,19 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
 
   // Listen for deep read events
   useEffect(() => {
-    const handleStartDeepRead = async () => {
+    const handleStartDeepRead = async (event: Event) => {
+      const detail = (event as CustomEvent<StartDeepReadDetail>).detail
+      const paperTitle = detail?.paperTitle || 'Untitled Paper'
+
       setActiveLeftDoc('litReview')
       setDeepReadProgress(0)
 
       try {
         // 启动深度阅读任务
         const { task_id } = await deepReadApi.startDeepRead({
-          paper_title: 'Transformers in Vision: A Comprehensive Survey',
-          paper_url: 'https://arxiv.org/abs/2101.01169'
+          paper_title: paperTitle,
+          paper_url: detail?.paperUrl,
+          paper_content: detail?.paperContent
         })
 
         // 添加到打开的标签
@@ -140,11 +374,11 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
       setActiveLeftDoc('litReview')
     }
 
-    window.addEventListener('startDeepRead', handleStartDeepRead)
+    window.addEventListener('startDeepRead', handleStartDeepRead as EventListener)
     window.addEventListener('jumpToResult', handleJumpToResult)
 
     return () => {
-      window.removeEventListener('startDeepRead', handleStartDeepRead)
+      window.removeEventListener('startDeepRead', handleStartDeepRead as EventListener)
       window.removeEventListener('jumpToResult', handleJumpToResult)
     }
   }, [setActiveLeftDoc])
@@ -558,70 +792,129 @@ function AIChat() {
 }
 
 function RightWorkspace() {
-  const [showSearch, setShowSearch] = useState(false)
-  const [openPapers, setOpenPapers] = useState<Array<{ id: string; title: string }>>([
-    { id: 'paper1', title: 'Transformers in Vision' },
-    { id: 'paper2', title: 'Attention Is All You Need' },
-    { id: 'paper3', title: 'An Image is Worth 16x16 Words' }
-  ])
-  const [activePaper, setActivePaper] = useState<string>('paper1')
+  const [showSearch, setShowSearch] = useState(true)
+  const [openPapers, setOpenPapers] = useState<LiteratureDetail[]>([])
+  const [activePaperId, setActivePaperId] = useState<string | null>(null)
+  const [isDownloadingPaper, setIsDownloadingPaper] = useState(false)
+  const [paperError, setPaperError] = useState<string | null>(null)
 
-  const handleClosePaper = (paperId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    const newOpenPapers = openPapers.filter(p => p.id !== paperId)
-    setOpenPapers(newOpenPapers)
+  const activePaper = openPapers.find((paper) => paper.paper_id === activePaperId) ?? null
+  const isSearchVisible = showSearch || openPapers.length === 0
 
-    // 如果关闭的是当前激活的论文，切换到第一个可用的论文
-    if (activePaper === paperId && newOpenPapers.length > 0) {
-      setActivePaper(newOpenPapers[0].id)
+  const handleClosePaper = (paperId: string, event: MouseEvent<HTMLElement>) => {
+    event.stopPropagation()
+    const remainingPapers = openPapers.filter((paper) => paper.paper_id !== paperId)
+    setOpenPapers(remainingPapers)
+
+    if (activePaperId === paperId) {
+      setActivePaperId(remainingPapers[0]?.paper_id ?? null)
+      if (remainingPapers.length === 0) {
+        setShowSearch(true)
+      }
     }
   }
 
-  const handleOpenPaper = (paperId: string, paperTitle: string) => {
-    // 检查论文是否已经打开
-    const isAlreadyOpen = openPapers.some(p => p.id === paperId)
+  const handleOpenPaper = async (paper: LiteratureItem): Promise<LiteratureDetail | null> => {
+    setPaperError(null)
 
-    if (!isAlreadyOpen) {
-      // 添加新论文到打开列表
-      setOpenPapers([...openPapers, { id: paperId, title: paperTitle }])
+    try {
+      const detail = await literatureApi.getPaperDetail(paper.paper_id)
+
+      setOpenPapers((previous) => {
+        const existingIndex = previous.findIndex((item) => item.paper_id === detail.paper_id)
+        if (existingIndex === -1) {
+          return [...previous, detail]
+        }
+
+        const next = [...previous]
+        next[existingIndex] = detail
+        return next
+      })
+
+      setActivePaperId(detail.paper_id)
+      setShowSearch(false)
+      return detail
+    } catch (error) {
+      console.error('Failed to open paper:', error)
+      setPaperError(error instanceof Error ? error.message : 'Failed to open paper')
+      return null
+    }
+  }
+
+  const handlePaperDownloaded = (paperId: string, localSourceUrl: string) => {
+    setOpenPapers((previous) =>
+      previous.map((paper) =>
+        paper.paper_id === paperId
+          ? {
+              ...paper,
+              is_downloaded: true,
+              local_source_url: localSourceUrl,
+            }
+          : paper
+      )
+    )
+  }
+
+  const handleDownloadActivePaper = async () => {
+    if (!activePaper) {
+      return
     }
 
-    // 切换到该论文并关闭搜索页面
-    setActivePaper(paperId)
-    setShowSearch(false)
+    try {
+      setIsDownloadingPaper(true)
+      const response = await literatureApi.download(activePaper.paper_id, activePaper.source)
+      handlePaperDownloaded(activePaper.paper_id, response.local_source_url)
+      openDownloadLink(response.local_source_url)
+    } catch (error) {
+      console.error('Failed to download active paper:', error)
+      setPaperError(error instanceof Error ? error.message : 'Failed to download paper')
+    } finally {
+      setIsDownloadingPaper(false)
+    }
+  }
+
+  const handleStartDeepRead = () => {
+    if (!activePaper) {
+      return
+    }
+
+    const event = new CustomEvent<StartDeepReadDetail>('startDeepRead', {
+      detail: {
+        paperTitle: activePaper.title,
+        paperUrl: activePaper.local_source_url ?? activePaper.url ?? activePaper.source_url,
+        paperContent: activePaper.original_text ?? activePaper.abstract,
+      },
+    })
+    window.dispatchEvent(event)
   }
 
   return (
     <section className="flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
-
-      {/* Toolbar */}
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1 overflow-x-auto">
           {openPapers.length === 0 ? (
-            <button
-              className="px-3 py-1 text-sm font-medium text-academic-muted border-b-2 border-academic-accent"
-            >
-              blank
+            <button className="px-3 py-1 text-sm font-medium text-academic-muted border-b-2 border-academic-accent">
+              Literature Search
             </button>
           ) : (
             <>
               {openPapers.map((paper) => (
                 <button
-                  key={paper.id}
+                  key={paper.paper_id}
                   className={`px-3 py-1 text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap ${
-                    activePaper === paper.id && !showSearch
+                    activePaperId === paper.paper_id && !showSearch
                       ? 'border-b-2 border-academic-accent text-academic-text'
                       : 'text-academic-muted hover:text-academic-text'
                   }`}
                   onClick={() => {
                     setShowSearch(false)
-                    setActivePaper(paper.id)
+                    setActivePaperId(paper.paper_id)
                   }}
                 >
                   <span>{paper.title}</span>
                   <i
                     className="fa-solid fa-xmark text-xs hover:text-red-500 cursor-pointer"
-                    onClick={(e) => handleClosePaper(paper.id, e)}
+                    onClick={(event) => handleClosePaper(paper.paper_id, event)}
                   ></i>
                 </button>
               ))}
@@ -635,14 +928,20 @@ function RightWorkspace() {
           )}
         </div>
 
-        {/* Right side buttons */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              const event = new CustomEvent('startDeepRead')
-              window.dispatchEvent(event)
-            }}
-            className="w-8 h-8 flex items-center justify-center rounded bg-academic-accent text-white hover:bg-red-700 transition-colors"
+            onClick={handleDownloadActivePaper}
+            disabled={!activePaper || isDownloadingPaper}
+            className="w-8 h-8 flex items-center justify-center rounded bg-white hover:bg-academic-hover text-academic-text border border-academic-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={activePaper?.is_downloaded ? '下载本地 LaTeX 源码' : '下载 LaTeX 源码'}
+          >
+            <i className="fa-solid fa-download text-sm"></i>
+          </button>
+
+          <button
+            onClick={handleStartDeepRead}
+            disabled={!activePaper}
+            className="w-8 h-8 flex items-center justify-center rounded bg-academic-accent text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title="深度阅读"
           >
             <i className="fa-solid fa-brain text-sm"></i>
@@ -672,24 +971,175 @@ function RightWorkspace() {
         </div>
       </div>
 
-      {/* Split View Area */}
-      {showSearch || openPapers.length === 0 ? (
-        <LiteratureSearch onOpenPaper={handleOpenPaper} />
-      ) : (
-        <div className="flex-1 flex gap-2 overflow-hidden">
-          <LaTeXViewer activePaper={activePaper} />
-          <AnnotationPanel />
+      {paperError && (
+        <div className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {paperError}
         </div>
       )}
+
+      <div className={`flex-1 min-h-0 flex-col ${isSearchVisible ? 'flex' : 'hidden'}`}>
+        <LiteratureSearch
+          onOpenPaper={handleOpenPaper}
+          onPaperDownloaded={handlePaperDownloaded}
+        />
+      </div>
+
+      <div className={`flex-1 gap-2 overflow-hidden ${isSearchVisible ? 'hidden' : 'flex'}`}>
+          <LaTeXViewer
+            paper={activePaper}
+            onDownloadPaper={handleDownloadActivePaper}
+            isDownloading={isDownloadingPaper}
+          />
+          <AnnotationPanel />
+      </div>
     </section>
   )
 }
 
-function LiteratureSearch({ onOpenPaper }: { onOpenPaper: (paperId: string, paperTitle: string) => void }) {
+function LiteratureSearch({
+  onOpenPaper,
+  onPaperDownloaded,
+}: {
+  onOpenPaper: (paper: LiteratureItem) => Promise<LiteratureDetail | null>
+  onPaperDownloaded: (paperId: string, localSourceUrl: string) => void
+}) {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<LiteratureItem[]>([])
+  const [recentPapers, setRecentPapers] = useState<RecentPaper[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [isLoadingRecent, setIsLoadingRecent] = useState(false)
+  const [selectedYear, setSelectedYear] = useState('')
+  const [selectedSource, setSelectedSource] = useState('')
+  const [searchOnline, setSearchOnline] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchNotice, setSearchNotice] = useState<string | null>(null)
+  const [searchPage, setSearchPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [searchTotal, setSearchTotal] = useState(0)
+  const [searchTotalPages, setSearchTotalPages] = useState(0)
+  const [hasPrevPage, setHasPrevPage] = useState(false)
+  const [hasNextPage, setHasNextPage] = useState(false)
+  const [isRecentCollapsed, setIsRecentCollapsed] = useState(true)
+  const [openingPaperId, setOpeningPaperId] = useState<string | null>(null)
+
+  const loadRecent = async () => {
+    setIsLoadingRecent(true)
+    try {
+      const { papers } = await literatureApi.getRecent()
+      setRecentPapers(papers)
+    } catch (error) {
+      console.error('Failed to load recent papers:', error)
+    } finally {
+      setIsLoadingRecent(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadRecent()
+  }, [])
+
+  const runSearch = async (page: number) => {
+    if (!searchQuery.trim()) return
+
+    setIsSearching(true)
+    setSearchError(null)
+    setSearchNotice(null)
+    try {
+      const response = await literatureApi.search({
+        query: searchQuery,
+        year: selectedYear || undefined,
+        source: selectedSource || undefined,
+        limit: pageSize,
+        online: searchOnline,
+        page,
+        page_size: pageSize,
+      })
+      setSearchResults(response.results)
+      setSearchPage(response.page)
+      setSearchTotal(response.total)
+      setSearchTotalPages(response.total_pages)
+      setHasPrevPage(response.has_prev)
+      setHasNextPage(response.has_next)
+      setSearchNotice(response.notice ?? null)
+    } catch (error) {
+      console.error('Search failed:', error)
+      setSearchResults([])
+      setSearchTotal(0)
+      setSearchTotalPages(0)
+      setHasPrevPage(false)
+      setHasNextPage(false)
+      setSearchNotice(null)
+      setSearchError(error instanceof Error ? error.message : 'Search failed')
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  const handleSearch = async () => {
+    await runSearch(1)
+  }
+
+  const markPaperDownloaded = (paperId: string, localSourceUrl: string) => {
+    setSearchResults((previous) =>
+      previous.map((paper) =>
+        paper.paper_id === paperId
+          ? {
+              ...paper,
+              is_downloaded: true,
+              local_source_url: localSourceUrl,
+            }
+          : paper
+      )
+    )
+    setRecentPapers((previous) =>
+      previous.map((paper) =>
+        paper.paper_id === paperId
+          ? {
+              ...paper,
+              is_downloaded: true,
+              local_source_url: localSourceUrl,
+            }
+          : paper
+      )
+    )
+    onPaperDownloaded(paperId, localSourceUrl)
+  }
+
+  const handleDownload = async (paper: LiteratureItem) => {
+    try {
+      if (paper.is_downloaded && paper.local_source_url) {
+        openDownloadLink(paper.local_source_url)
+        return
+      }
+
+      const response = await literatureApi.download(paper.paper_id, paper.source)
+      markPaperDownloaded(paper.paper_id, response.local_source_url)
+      void loadRecent()
+      openDownloadLink(response.local_source_url)
+    } catch (error) {
+      console.error('Download failed:', error)
+      setSearchError(error instanceof Error ? error.message : 'Download failed')
+    }
+  }
+
+  const handleOpenPaperClick = async (paper: LiteratureItem) => {
+    setOpeningPaperId(paper.paper_id)
+    setSearchError(null)
+
+    try {
+      const detail = await onOpenPaper(paper)
+      if (detail?.is_downloaded && detail.local_source_url) {
+        markPaperDownloaded(detail.paper_id, detail.local_source_url)
+        void loadRecent()
+      }
+    } finally {
+      setOpeningPaperId((current) => (current === paper.paper_id ? null : current))
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col gap-2 overflow-hidden">
-      {/* Search Section */}
-      <div className="h-1/2 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
+      <div className={`${isRecentCollapsed ? 'flex-1 min-h-0' : 'h-1/2 min-h-0'} bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-all duration-200`}>
         <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
           <h3 className="font-serif text-xs font-bold flex items-center gap-2">
             <i className="fa-solid fa-magnifying-glass text-academic-accent text-xs"></i>
@@ -697,190 +1147,423 @@ function LiteratureSearch({ onOpenPaper }: { onOpenPaper: (paperId: string, pape
           </h3>
         </div>
 
-        <div className="flex-1 p-4 overflow-y-auto">
-          {/* Search Input */}
+        <div className="flex-1 min-h-0 p-4 overflow-y-auto flex flex-col">
           <div className="mb-4">
             <div className="relative">
               <input
                 type="text"
                 placeholder="Search by title, author, keywords..."
                 className="w-full bg-academic-bg border border-academic-border rounded-md py-2 pl-4 pr-10 text-sm focus:outline-none focus:border-academic-accent transition-colors"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
+                  if (event.key === 'Enter') {
+                    void handleSearch()
+                  }
+                }}
               />
-              <button className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors">
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors disabled:opacity-50"
+                onClick={handleSearch}
+                disabled={isSearching}
+              >
                 <i className="fa-solid fa-magnifying-glass text-xs"></i>
               </button>
             </div>
           </div>
 
-          {/* Filters */}
           <div className="flex gap-2 mb-4">
-            <select className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent">
-              <option>All Years</option>
-              <option>2024</option>
-              <option>2023</option>
-              <option>2022</option>
+            <select
+              className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
+              value={selectedYear}
+              onChange={(event) => setSelectedYear(event.target.value)}
+            >
+              <option value="">All Years</option>
+              <option value="2026">2026</option>
+              <option value="2025">2025</option>
+              <option value="2024">2024</option>
+              <option value="2023">2023</option>
+              <option value="2022">2022</option>
+              <option value="2021">2021</option>
             </select>
-            <select className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent">
-              <option>All Sources</option>
-              <option>arXiv</option>
-              <option>IEEE</option>
-              <option>ACM</option>
+            <select
+              className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
+              value={selectedSource}
+              onChange={(event) => setSelectedSource(event.target.value)}
+            >
+              <option value="">All Sources</option>
+              <option value="arXiv">arXiv</option>
             </select>
-            <button className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-muted hover:text-academic-text hover:border-academic-accent transition-colors">
-              <i className="fa-solid fa-filter text-xs mr-1"></i>
-              More Filters
+            <select
+              className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
+              value={pageSize}
+              onChange={(event) => setPageSize(Number(event.target.value))}
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={searchOnline}
+              onClick={() => setSearchOnline((previous) => !previous)}
+              className={`ml-auto inline-flex items-center gap-3 rounded-full border px-3 py-1.5 text-xs transition-colors duration-200 ${
+                searchOnline
+                  ? 'border-red-200 bg-red-50 text-academic-accent'
+                  : 'border-academic-border bg-white text-academic-muted'
+              }`}
+            >
+              <span className="font-medium">联网搜索</span>
+              <span
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${
+                  searchOnline ? 'bg-academic-accent' : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200 ease-out ${
+                    searchOnline ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                ></span>
+              </span>
             </button>
           </div>
 
-          {/* Search Results Placeholder */}
-          <div className="text-center text-academic-muted py-8">
-            <i className="fa-solid fa-magnifying-glass text-3xl mb-3 opacity-30"></i>
-            <p className="text-sm">Enter keywords to search for literature</p>
+          <div className="mb-4 text-xs text-academic-muted">
+            {searchOnline
+              ? '已开启联网搜索：将查询 arXiv，并标记论文源码是否已缓存到本地。'
+              : '当前仅搜索本地文献库。开启联网搜索后会查询 arXiv。'}
           </div>
+
+          {searchError && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {searchError}
+            </div>
+          )}
+
+          {searchNotice && (
+            <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {searchNotice}
+            </div>
+          )}
+
+          {isSearching ? (
+            <div className="text-center text-academic-muted py-8">
+              <i className="fa-solid fa-spinner fa-spin text-3xl mb-3"></i>
+              <p className="text-sm">Searching...</p>
+            </div>
+          ) : searchResults.length > 0 ? (
+            <>
+              <div className="mb-3 flex items-center justify-between text-xs text-academic-muted">
+                <span>
+                  {searchTotal > 0
+                    ? `Showing ${(searchPage - 1) * pageSize + 1}-${Math.min(searchPage * pageSize, searchTotal)} of ${searchTotal}`
+                    : 'No results'}
+                </span>
+                <span>Page {searchPage} / {Math.max(searchTotalPages, 1)}</span>
+              </div>
+
+              <div className="visible-scrollbar space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
+                {searchResults.map((paper) => (
+                  <div
+                    key={paper.paper_id}
+                    className="p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <h4
+                        className={`text-sm font-medium flex-1 cursor-pointer hover:text-academic-accent ${
+                          openingPaperId === paper.paper_id
+                            ? 'text-academic-accent'
+                            : 'text-academic-text'
+                        }`}
+                        onClick={() => void handleOpenPaperClick(paper)}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <span>{paper.title}</span>
+                          {openingPaperId === paper.paper_id && (
+                            <i className="fa-solid fa-spinner fa-spin text-[11px] text-academic-accent"></i>
+                          )}
+                        </span>
+                      </h4>
+                    </div>
+                    <p className="text-xs text-academic-muted mb-2">
+                      {paper.authors.slice(0, 3).join(', ')}
+                      {paper.authors.length > 3 && ' et al.'} • {paper.year}
+                    </p>
+                    {paper.abstract && (
+                      <p className="text-xs text-academic-text/70 mb-2 line-clamp-2">
+                        {paper.abstract}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex gap-1 flex-wrap">
+                        {paper.tags.map((tag, idx) => (
+                          <span key={idx} className="px-2 py-0.5 bg-academic-hover text-xs rounded">
+                            {tag}
+                          </span>
+                        ))}
+                        <span
+                          className={`px-2 py-0.5 text-xs rounded ${
+                            paper.is_downloaded
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {paper.is_downloaded ? '已缓存源码' : '未缓存源码'}
+                        </span>
+                      </div>
+                      {paper.source_url && (
+                        <button
+                          onClick={() => handleDownload(paper)}
+                          className="text-xs text-academic-accent hover:text-red-700 flex items-center gap-1 shrink-0"
+                        >
+                          <i className="fa-solid fa-download"></i>
+                          {paper.is_downloaded ? 'Get Local LaTeX' : 'Download LaTeX'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => void runSearch(searchPage - 1)}
+                  disabled={!hasPrevPage || isSearching}
+                  className="rounded border border-academic-border bg-white px-3 py-1.5 text-xs text-academic-text transition-colors hover:bg-academic-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => void runSearch(searchPage + 1)}
+                  disabled={!hasNextPage || isSearching}
+                  className="rounded border border-academic-border bg-white px-3 py-1.5 text-xs text-academic-text transition-colors hover:bg-academic-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </>
+          ) : searchQuery ? (
+            <div className="text-center text-academic-muted py-8">
+              <i className="fa-solid fa-search text-3xl mb-3 opacity-30"></i>
+              <p className="text-sm">
+                {searchOnline ? 'No results found online' : 'No local results found'}
+              </p>
+              {!searchOnline && (
+                <p className="text-xs mt-2">打开“联网搜索”后可以直接查询 arXiv。</p>
+              )}
+            </div>
+          ) : (
+            <div className="text-center text-academic-muted py-8">
+              <i className="fa-solid fa-magnifying-glass text-3xl mb-3 opacity-30"></i>
+              <p className="text-sm">
+                {searchOnline ? 'Enter keywords to search online' : 'Enter keywords to search local literature'}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Recent History Section */}
-      <div className="h-1/2 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden">
-        <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
+      <div className={`${isRecentCollapsed ? 'shrink-0' : 'h-1/2 min-h-0'} bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-all duration-200`}>
+        <div className={`h-8 ${isRecentCollapsed ? '' : 'border-b'} border-academic-border bg-academic-hover flex items-center justify-between px-3`}>
           <h3 className="font-serif text-xs font-bold flex items-center gap-2">
             <i className="fa-solid fa-clock-rotate-left text-academic-accent text-xs"></i>
             Recent Papers
           </h3>
+          <button
+            type="button"
+            onClick={() => setIsRecentCollapsed((previous) => !previous)}
+            className="flex items-center gap-2 text-[11px] text-academic-muted hover:text-academic-text transition-colors"
+            aria-expanded={!isRecentCollapsed}
+            aria-label={isRecentCollapsed ? '展开 Recent Papers' : '折叠 Recent Papers'}
+          >
+            <span>{recentPapers.length}</span>
+            <i className={`fa-solid fa-chevron-${isRecentCollapsed ? 'up' : 'down'} text-[10px]`}></i>
+          </button>
         </div>
 
-        <div className="flex-1 p-4 overflow-y-auto">
-          {/* History Item */}
-          <div
-            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
-            onClick={() => onOpenPaper('paper1', 'Transformers in Vision')}
-          >
-            <h4 className="text-sm font-medium text-academic-text mb-1">Transformers in Vision: A Comprehensive Survey</h4>
-            <p className="text-xs text-academic-muted mb-2">Kai Han, Yunhe Wang • 2023</p>
-            <div className="flex gap-2">
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Computer Vision</span>
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Transformers</span>
-            </div>
+        {!isRecentCollapsed && (
+          <div className="visible-scrollbar flex-1 min-h-0 p-4 overflow-y-auto">
+            {isLoadingRecent ? (
+              <div className="text-center text-academic-muted py-8">
+                <i className="fa-solid fa-spinner fa-spin text-2xl mb-3"></i>
+                <p className="text-sm">Loading recent papers...</p>
+              </div>
+            ) : recentPapers.length > 0 ? (
+              recentPapers.map((paper) => (
+                <div
+                  key={paper.paper_id}
+                  className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
+                  onClick={() => void handleOpenPaperClick(paper)}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-medium text-academic-text mb-1 inline-flex items-center gap-2">
+                        <span>{paper.title}</span>
+                        {openingPaperId === paper.paper_id && (
+                          <i className="fa-solid fa-spinner fa-spin text-[11px] text-academic-accent"></i>
+                        )}
+                      </h4>
+                      <p className="text-xs text-academic-muted mb-2">
+                        {paper.authors.slice(0, 2).join(', ')}
+                        {paper.authors.length > 2 && ' et al.'} • {paper.year}
+                      </p>
+                    </div>
+                    {paper.is_downloaded && paper.local_source_url && (
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          openDownloadLink(paper.local_source_url!)
+                        }}
+                        className="shrink-0 text-xs text-academic-accent hover:text-red-700"
+                      >
+                        LaTeX
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    {paper.tags.map((tag, idx) => (
+                      <span key={idx} className="px-2 py-0.5 bg-academic-hover text-xs rounded">
+                        {tag}
+                      </span>
+                    ))}
+                    <span
+                      className={`px-2 py-0.5 text-xs rounded ${
+                        paper.is_downloaded
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {paper.is_downloaded ? '已缓存源码' : '未缓存源码'}
+                    </span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-center text-academic-muted py-8">
+                <i className="fa-regular fa-clock text-3xl mb-3 opacity-30"></i>
+                <p className="text-sm">No recent papers yet</p>
+              </div>
+            )}
           </div>
-
-          <div
-            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
-            onClick={() => onOpenPaper('paper2', 'Attention Is All You Need')}
-          >
-            <h4 className="text-sm font-medium text-academic-text mb-1">Attention Is All You Need</h4>
-            <p className="text-xs text-academic-muted mb-2">Vaswani et al. • 2017</p>
-            <div className="flex gap-2">
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">NLP</span>
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Attention</span>
-            </div>
-          </div>
-
-          <div
-            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
-            onClick={() => onOpenPaper('paper3', 'An Image is Worth 16x16 Words')}
-          >
-            <h4 className="text-sm font-medium text-academic-text mb-1">An Image is Worth 16x16 Words</h4>
-            <p className="text-xs text-academic-muted mb-2">Dosovitskiy et al. • 2021</p>
-            <div className="flex gap-2">
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Vision Transformer</span>
-            </div>
-          </div>
-
-          <div
-            className="mb-3 p-3 border border-academic-border rounded-lg hover:bg-academic-hover transition-colors cursor-pointer"
-            onClick={() => onOpenPaper('paper4', 'BERT: Pre-training of Deep Bidirectional Transformers')}
-          >
-            <h4 className="text-sm font-medium text-academic-text mb-1">BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</h4>
-            <p className="text-xs text-academic-muted mb-2">Devlin et al. • 2018</p>
-            <div className="flex gap-2">
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">NLP</span>
-              <span className="px-2 py-0.5 bg-academic-hover text-xs rounded">Pre-training</span>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   )
 }
 
-function LaTeXViewer({ activePaper }: { activePaper: string }) {
-  // 根据不同的 paper 显示不同的内容
-  const paperContent: Record<string, {
-    title: string
-    authors: Array<{ name: string; affiliation: string }>
-    abstract: string
-    content: string
-  }> = {
-    paper1: {
-      title: 'Transformers in Vision: A Comprehensive Survey',
-      authors: [
-        { name: 'Kai Han', affiliation: "Noah's Ark Lab" },
-        { name: 'Yunhe Wang', affiliation: 'Huawei Technologies' }
-      ],
-      abstract: 'Transformer, first applied to the field of natural language processing, is a type of deep neural network mainly based on the self-attention mechanism. Thanks to its strong representation capabilities, researchers are looking at ways to apply transformer to computer vision tasks. In this paper, we review the application of transformer models in computer vision...',
-      content: 'Deep learning has achieved tremendous success in various computer vision tasks. The convolutional neural network (CNN) is the fundamental component of modern vision systems. However, recently, the Transformer architecture has shown great potential to become a strong alternative to CNNs.'
-    },
-    paper2: {
-      title: 'Attention Is All You Need',
-      authors: [
-        { name: 'Ashish Vaswani', affiliation: 'Google Brain' },
-        { name: 'Noam Shazeer', affiliation: 'Google Brain' }
-      ],
-      abstract: 'The dominant sequence transduction models are based on complex recurrent or convolutional neural networks. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.',
-      content: 'The Transformer follows this overall architecture using stacked self-attention and point-wise, fully connected layers for both the encoder and decoder. The attention function can be described as mapping a query and a set of key-value pairs to an output.'
-    },
-    paper3: {
-      title: 'An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale',
-      authors: [
-        { name: 'Alexey Dosovitskiy', affiliation: 'Google Research' },
-        { name: 'Lucas Beyer', affiliation: 'Google Research' }
-      ],
-      abstract: 'While the Transformer architecture has become the de-facto standard for natural language processing tasks, its applications to computer vision remain limited. In vision, attention is either applied in conjunction with convolutional networks, or used to replace certain components of convolutional networks.',
-      content: 'We show that this reliance on CNNs is not necessary and a pure transformer applied directly to sequences of image patches can perform very well on image classification tasks. When pre-trained on large amounts of data and transferred to multiple mid-sized or small image recognition benchmarks, Vision Transformer (ViT) attains excellent results.'
-    }
+function LaTeXViewer({
+  paper,
+  onDownloadPaper,
+  isDownloading,
+}: {
+  paper: LiteratureDetail | null
+  onDownloadPaper: () => void
+  isDownloading: boolean
+}) {
+  if (!paper) {
+    return (
+      <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto p-8 pt-5 flex items-center justify-center">
+        <div className="text-center text-academic-muted">
+          <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
+          <p className="text-sm">Select a paper to view its details.</p>
+        </div>
+      </article>
+    )
   }
-
-  const paper = paperContent[activePaper] || paperContent.paper1
 
   return (
     <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto p-8 pt-5">
       <div className="max-w-3xl mx-auto">
-        <header className="text-center mb-12 border-b border-academic-border pb-8">
+        <header className="text-center mb-10 border-b border-academic-border pb-8">
+          <p className="text-xs uppercase tracking-[0.25em] text-academic-muted mb-4">
+            {paper.source} {paper.year ? `• ${paper.year}` : ''}
+          </p>
           <h1 className="font-serif text-3xl font-bold leading-tight mb-6">{paper.title}</h1>
-          <div className="flex justify-center gap-8 text-sm font-serif">
-            {paper.authors.map((author, index) => (
-              <div key={index} className="text-center">
-                <p className="font-bold">{author.name}</p>
-                <p className="text-academic-muted text-xs mt-1">{author.affiliation}</p>
-              </div>
-            ))}
+
+          <div className="flex flex-wrap justify-center gap-3 text-sm font-serif text-academic-text/90">
+            {paper.authors.length > 0 ? (
+              paper.authors.map((author, index) => (
+                <span key={`${author}-${index}`} className="px-3 py-1 rounded-full bg-academic-hover border border-academic-border">
+                  {author}
+                </span>
+              ))
+            ) : (
+              <span className="text-academic-muted">Unknown authors</span>
+            )}
+          </div>
+
+          {paper.tags.length > 0 && (
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              {paper.tags.map((tag) => (
+                <span key={tag} className="px-2.5 py-1 rounded-full bg-red-50 text-academic-accent text-xs border border-red-100">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <button
+              onClick={onDownloadPaper}
+              disabled={isDownloading}
+              className="px-4 py-2 rounded-md bg-academic-accent text-white text-sm hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isDownloading
+                ? 'Downloading...'
+                : paper.is_downloaded
+                  ? 'Get Local LaTeX'
+                  : 'Download LaTeX'}
+            </button>
+
+            {paper.url && (
+              <a
+                href={paper.url}
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-2 rounded-md bg-academic-hover border border-academic-border text-sm text-academic-text hover:bg-academic-border transition-colors"
+              >
+                Open Source Page
+              </a>
+            )}
+
+            {paper.local_source_url && (
+              <a
+                href={paper.local_source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-2 rounded-md bg-white border border-academic-border text-sm text-academic-text hover:bg-academic-hover transition-colors"
+              >
+                Local LaTeX
+              </a>
+            )}
           </div>
         </header>
 
-        <section className="mb-10">
-          <h2 className="font-serif text-lg font-bold mb-4 uppercase tracking-wider text-center">Abstract</h2>
-          <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90">
-            {paper.abstract}
-          </p>
-        </section>
-
-        <section className="mb-10">
-          <h2 className="font-serif text-xl font-bold mb-4 border-b border-academic-border pb-2">1. Introduction</h2>
-          <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90 mb-4">
-            {paper.content}
-          </p>
-
-          <p className="font-serif text-sm leading-relaxed text-justify text-academic-text/90 bg-yellow-50 border-l-2 border-yellow-400 pl-3 py-1 cursor-pointer hover:bg-yellow-100 transition-colors">
-            The self-attention mechanism <span className="latex-math text-xs ml-1">(Eq. 1)</span> allows the model to capture long-range dependencies across the entire image, which is a significant advantage over the local receptive fields of standard convolutions.
-          </p>
-
-          <div className="my-8 text-center bg-academic-hover py-6 rounded-lg border border-academic-border">
-            <p className="font-serif italic text-sm text-academic-muted mb-2">Equation 1: Self-Attention</p>
-            <p className="font-serif text-lg">
-              <span className="latex-math">Attention(Q, K, V) = softmax(QK<sup>T</sup> / &radic;d<sub>k</sub>)V</span>
-            </p>
+        <section className="mb-8 rounded-lg border border-academic-border bg-academic-hover px-4 py-3 text-xs text-academic-muted">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {paper.content_source === 'local_latex'
+                ? '当前显示本地缓存的 LaTeX 原文。'
+                : paper.content_source === 'arxiv_latex'
+                  ? '当前显示从 arXiv LaTeX 解析出的原文。'
+                  : 'LaTeX 原文暂不可用，当前回退为摘要内容。'}
+            </span>
+            <span className="font-mono text-[11px] text-academic-text">{paper.paper_id}</span>
           </div>
+          {paper.content_error && (
+            <p className="mt-2 text-red-600">{paper.content_error}</p>
+          )}
         </section>
+
+        {paper.original_sections.length > 0 ? (
+          <LazyPaperPages paper={paper} />
+        ) : (
+          <section className="text-center text-academic-muted py-12">
+            <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
+            <p className="text-sm">No readable LaTeX content is available for this paper yet.</p>
+          </section>
+        )}
       </div>
     </article>
   )
