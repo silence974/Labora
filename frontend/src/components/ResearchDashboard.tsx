@@ -609,15 +609,19 @@ function RightWorkspace() {
   const [showSearch, setShowSearch] = useState(true)
   const [openPapers, setOpenPapers] = useState<LiteratureDetail[]>([])
   const [activePaperId, setActivePaperId] = useState<string | null>(null)
+  const [isPaperMenuOpen, setIsPaperMenuOpen] = useState(false)
   const [isDownloadingPaper, setIsDownloadingPaper] = useState(false)
   const [paperError, setPaperError] = useState<string | null>(null)
   const [annotations, setAnnotations] = useState<ReaderAnnotation[]>([])
   const [referencePreview, setReferencePreview] = useState<ReferencePreviewState>({ kind: 'closed' })
   const referencePreviewRequestTokenRef = useRef(0)
+  const paperMenuRef = useRef<HTMLDivElement | null>(null)
 
   const activePaper = openPapers.find((paper) => paper.paper_id === activePaperId) ?? null
   const isSearchVisible = showSearch || openPapers.length === 0
   const isReferencePreviewOpen = referencePreview.kind !== 'closed'
+  const currentWorkspaceTitle =
+    showSearch || !activePaper ? 'Literature Search' : activePaper.title
 
   const handleClosePaper = (paperId: string, event: MouseEvent<HTMLElement>) => {
     event.stopPropagation()
@@ -796,6 +800,30 @@ function RightWorkspace() {
       : []
 
   useEffect(() => {
+    if (!isPaperMenuOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: globalThis.MouseEvent) => {
+      const menuNode = paperMenuRef.current
+      if (!menuNode || !(event.target instanceof Node) || menuNode.contains(event.target)) {
+        return
+      }
+
+      setIsPaperMenuOpen(false)
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+    }
+  }, [isPaperMenuOpen])
+
+  useEffect(() => {
+    setIsPaperMenuOpen(false)
+  }, [showSearch, activePaperId, openPapers.length])
+
+  useEffect(() => {
     if (!isReferencePreviewOpen) {
       return
     }
@@ -815,39 +843,95 @@ function RightWorkspace() {
   return (
     <section className="relative flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-1 overflow-x-auto">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {openPapers.length === 0 ? (
             <button className="px-3 py-1 text-sm font-medium text-academic-muted border-b-2 border-academic-accent">
               Literature Search
             </button>
           ) : (
             <>
-              {openPapers.map((paper) => (
+              <div ref={paperMenuRef} className="relative min-w-0 flex-1">
                 <button
-                  key={paper.paper_id}
-                  className={`px-3 py-1 text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap ${
-                    activePaperId === paper.paper_id && !showSearch
-                      ? 'border-b-2 border-academic-accent text-academic-text'
-                      : 'text-academic-muted hover:text-academic-text'
-                  }`}
-                  onClick={() => {
-                    setShowSearch(false)
-                    setActivePaperId(paper.paper_id)
-                  }}
+                  type="button"
+                  className="flex w-full min-w-0 items-center gap-2 border-b-2 border-academic-accent px-3 py-1 text-sm font-medium text-academic-text transition-colors hover:text-academic-accent"
+                  onClick={() => setIsPaperMenuOpen((current) => !current)}
+                  title={currentWorkspaceTitle}
+                  aria-haspopup="menu"
+                  aria-expanded={isPaperMenuOpen}
                 >
-                  <span>{paper.title}</span>
-                  <i
-                    className="fa-solid fa-xmark text-xs hover:text-red-500 cursor-pointer"
-                    onClick={(event) => handleClosePaper(paper.paper_id, event)}
-                  ></i>
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    {currentWorkspaceTitle}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-academic-muted">
+                    <i className={`fa-solid ${isPaperMenuOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
+                  </span>
                 </button>
-              ))}
-              <button
-                className="w-6 h-6 flex items-center justify-center text-academic-muted hover:text-academic-text transition-colors ml-2"
-                onClick={() => setShowSearch(true)}
-              >
-                <i className="fa-solid fa-plus text-xs"></i>
-              </button>
+
+                {isPaperMenuOpen ? (
+                  <div className="absolute left-0 top-full z-20 mt-2 w-full min-w-[340px] max-w-[640px] overflow-hidden rounded-xl border border-academic-border bg-white shadow-[0_18px_40px_rgba(15,23,42,0.16)]">
+                    <div className="border-b border-academic-border bg-academic-bg/70 px-3 py-2 text-[11px] uppercase tracking-[0.14em] text-academic-muted">
+                      Open Papers
+                    </div>
+
+                    <div className="max-h-72 overflow-y-auto py-1">
+                      <button
+                        type="button"
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                          showSearch
+                            ? 'bg-red-50 text-academic-accent'
+                            : 'text-academic-text hover:bg-academic-hover'
+                        }`}
+                        onClick={() => {
+                          setShowSearch(true)
+                          setIsPaperMenuOpen(false)
+                        }}
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-academic-accent shadow-sm ring-1 ring-academic-border">
+                          <i className="fa-solid fa-magnifying-glass text-[11px]"></i>
+                        </span>
+                        <span className="truncate">Literature Search</span>
+                      </button>
+
+                      <div className="my-1 border-t border-academic-border"></div>
+
+                      {openPapers.map((paper) => (
+                        <div key={paper.paper_id} className="flex items-center gap-2 px-2 py-0.5">
+                          <button
+                            type="button"
+                            className={`min-w-0 flex-1 rounded-lg px-2 py-2 text-left text-sm transition-colors ${
+                              activePaperId === paper.paper_id && !showSearch
+                                ? 'bg-red-50 text-academic-accent'
+                                : 'text-academic-text hover:bg-academic-hover'
+                            }`}
+                            onClick={() => {
+                              setShowSearch(false)
+                              setActivePaperId(paper.paper_id)
+                              setIsPaperMenuOpen(false)
+                            }}
+                            title={paper.title}
+                          >
+                            <span className="block truncate">{paper.title}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-academic-muted transition-colors hover:bg-red-50 hover:text-red-500"
+                            title="关闭文献"
+                            aria-label="关闭文献"
+                            onClick={(event) => {
+                              handleClosePaper(paper.paper_id, event)
+                              setIsPaperMenuOpen(false)
+                            }}
+                          >
+                            <i className="fa-solid fa-xmark text-xs"></i>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
             </>
           )}
         </div>
