@@ -64,6 +64,10 @@ export interface LiteratureDownloadResponse {
 }
 
 export const literatureApi = {
+  buildExternalPreviewUrl(url: string): string {
+    return `${API_BASE_URL}/api/literature/external-preview?url=${encodeURIComponent(url)}`
+  },
+
   async search(request: LiteratureSearchRequest): Promise<LiteratureSearchResponse> {
     const response = await fetch(`${API_BASE_URL}/api/literature/search`, {
       method: 'POST',

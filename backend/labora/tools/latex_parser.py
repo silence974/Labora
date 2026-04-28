@@ -27,7 +27,41 @@ INCLUDE_GRAPHICS_PATTERN = re.compile(
     r"\\includegraphics(?:\[[^\]]*\])?\{(?P<path>[^}]*)\}",
     re.IGNORECASE,
 )
+HREF_PATTERN = re.compile(
+    r"\\href\{(?P<url>[^}]*)\}\{(?P<label>.*?)\}",
+    re.DOTALL | re.IGNORECASE,
+)
+URL_PATTERN = re.compile(
+    r"\\url\{(?P<url>[^}]*)\}",
+    re.DOTALL | re.IGNORECASE,
+)
 TABLE_LINE_BREAK = "__LABORA_TABLE_LINE_BREAK__"
+
+
+def _clean_link_label(text: str) -> str:
+    text = re.sub(
+        r"\\(?:textbf|textit|emph|underline|mathrm|mathbf|operatorname)\{([^}]*)\}",
+        r"\1",
+        text,
+    )
+    text = re.sub(r"[{}]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _preserve_latex_links(text: str) -> str:
+    def replace_href(match: re.Match[str]) -> str:
+        url = match.group("url").strip()
+        label = _clean_link_label(match.group("label"))
+        if not url:
+            return label
+        return f"[{label or url}]({url})"
+
+    def replace_url(match: re.Match[str]) -> str:
+        return match.group("url").strip()
+
+    text = HREF_PATTERN.sub(replace_href, text)
+    return URL_PATTERN.sub(replace_url, text)
 
 
 def _clean_latex_inline(text: str) -> str:
@@ -40,6 +74,7 @@ def _clean_latex_inline(text: str) -> str:
     text = text.replace(r"\%", escaped_percent)
     text = text.replace(r"\#", escaped_hash)
     text = text.replace(r"\_", escaped_underscore)
+    text = _preserve_latex_links(text)
 
     text = re.sub(r"\\cite\{[^}]*\}", "", text)
     text = re.sub(r"\\ref\{[^}]*\}", "", text)
@@ -179,6 +214,7 @@ def _clean_latex(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _replace_table_environments(text)
     text = _replace_figure_environments(text)
+    text = _preserve_latex_links(text)
     text = re.sub(r"\n\s*\n+", paragraph_break, text)
 
     # 移除常见的 LaTeX 命令

@@ -474,6 +474,51 @@ class TestLiteratureAPI:
         assert response.headers["content-disposition"].startswith("inline;")
         assert response.content.startswith(b"%PDF-1.4")
 
+    def test_get_external_preview_proxy_html(self, client, monkeypatch):
+        """测试外链预览端点会代理 HTML 并注入 base href"""
+
+        class FakeExternalPreviewResponse:
+            def __init__(self):
+                self.text = (
+                    "<!doctype html><html><head><title>TinyLlama</title></head>"
+                    '<body><a href="/jzhang38">Repo</a></body></html>'
+                )
+                self.content = self.text.encode("utf-8")
+                self.headers = {"content-type": "text/html; charset=utf-8"}
+                self.url = httpx.URL("https://github.com/jzhang38/TinyLlama")
+
+            def raise_for_status(self):
+                return None
+
+        class FakeExternalPreviewClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, *args, **kwargs):
+                assert url == "https://github.com/jzhang38/TinyLlama"
+                return FakeExternalPreviewResponse()
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature.httpx.AsyncClient",
+            FakeExternalPreviewClient,
+        )
+
+        response = client.get(
+            "/api/literature/external-preview",
+            params={"url": "https://github.com/jzhang38/TinyLlama"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert '<base href="https://github.com/jzhang38/TinyLlama">' in response.text
+        assert "TinyLlama" in response.text
+
     @patch("labora.api.routes.literature.arxiv_get_paper")
     def test_download_literature(
         self,

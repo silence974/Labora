@@ -4,6 +4,8 @@ import { memo } from 'preact/compat'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import type { LiteratureContentSection, LiteratureDetail } from '../api/literature'
+import { findReferenceMatches } from '../utils/literatureLinks'
+import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 
 type ContentBlockType = 'paragraph' | 'table' | 'image' | 'latex'
 
@@ -55,6 +57,27 @@ const INLINE_LATEX_PATTERN = /(\$\$[\s\S]+?\$\$|(?<!\$)\$[^$\n]+\$(?!\$))/g
 const MARKDOWN_IMAGE_PATTERN = /^!\[(.*?)\]\((.*?)\)$/
 const DIRECT_IMAGE_PATTERN = /^https?:\/\/\S+\.(?:png|jpe?g|gif|svg|webp|avif)(?:\?\S*)?$/i
 const FIGURE_PLACEHOLDER_PATTERN = /^\[FIGURE\]\s*(.+)$/i
+
+type InlineFragment =
+  | {
+      kind: 'text'
+      key: string
+      value: string
+    }
+  | {
+      kind: 'latex'
+      key: string
+      value: string
+      displayMode: boolean
+    }
+  | {
+      kind: 'reference'
+      key: string
+      label: string
+      href: string
+      isArxiv: boolean
+      paperId?: string
+    }
 
 function shouldLogPerformance(enablePerfLog?: boolean): boolean {
   return Boolean(
@@ -291,24 +314,66 @@ function renderKatexHtml(latex: string, displayMode: boolean): string {
   }
 }
 
-const InlineLatexText = memo(function InlineLatexText({ text }: { text: string }) {
+function buildTextFragments(text: string, keyPrefix: string): InlineFragment[] {
+  const fragments: InlineFragment[] = []
+  const matches = findReferenceMatches(text)
+  let cursor = 0
+
+  matches.forEach((match, index) => {
+    if (match.start > cursor) {
+      fragments.push({
+        kind: 'text',
+        key: `${keyPrefix}-text-${index}`,
+        value: text.slice(cursor, match.start),
+      })
+    }
+
+    fragments.push({
+      kind: 'reference',
+      key: `${keyPrefix}-reference-${index}`,
+      label: match.target.label,
+      href: match.target.href,
+      isArxiv: match.target.isArxiv,
+      paperId: match.target.paperId,
+    })
+    cursor = match.end
+  })
+
+  if (cursor < text.length) {
+    fragments.push({
+      kind: 'text',
+      key: `${keyPrefix}-tail`,
+      value: text.slice(cursor),
+    })
+  }
+
+  return fragments
+}
+
+const InlineLatexText = memo(function InlineLatexText({
+  text,
+  onOpenReference,
+}: {
+  text: string
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
+}) {
   const fragments = useMemo(() => {
     const parts = text.split(INLINE_LATEX_PATTERN).filter(Boolean)
-    return parts.map((part, index) => {
+    return parts.flatMap((part, index) => {
       const isDisplay = part.startsWith('$$') && part.endsWith('$$')
       const isInline = part.startsWith('$') && part.endsWith('$') && !isDisplay
 
       if (!isDisplay && !isInline) {
-        return { kind: 'text' as const, key: `text-${index}`, value: part }
+        return buildTextFragments(part, `text-${index}`)
       }
 
       const latex = isDisplay ? part.slice(2, -2).trim() : part.slice(1, -1).trim()
-      return {
+      return [{
         kind: 'latex' as const,
         key: `latex-${index}`,
         value: renderKatexHtml(latex, isDisplay),
         displayMode: isDisplay,
-      }
+      }]
     })
   }, [text])
 
@@ -317,6 +382,25 @@ const InlineLatexText = memo(function InlineLatexText({ text }: { text: string }
       {fragments.map((fragment) =>
         fragment.kind === 'text' ? (
           <span key={fragment.key}>{fragment.value}</span>
+        ) : fragment.kind === 'reference' ? (
+          <a
+            key={fragment.key}
+            href={fragment.href}
+            className="literature-inline-link rounded-sm"
+            onClick={(event) => {
+              if (onOpenReference) {
+                event.preventDefault()
+                onOpenReference({
+                  label: fragment.label,
+                  href: fragment.href,
+                  isArxiv: fragment.isArxiv,
+                  paperId: fragment.paperId,
+                })
+              }
+            }}
+          >
+            {fragment.label}
+          </a>
         ) : (
           <span
             key={fragment.key}
@@ -329,10 +413,16 @@ const InlineLatexText = memo(function InlineLatexText({ text }: { text: string }
   )
 })
 
-const ParagraphBlockView = memo(function ParagraphBlockView({ block }: { block: ParagraphBlock }) {
+const ParagraphBlockView = memo(function ParagraphBlockView({
+  block,
+  onOpenReference,
+}: {
+  block: ParagraphBlock
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
+}) {
   return (
     <p className="font-serif text-[15px] leading-8 text-academic-text/90">
-      <InlineLatexText text={block.content} />
+      <InlineLatexText text={block.content} onOpenReference={onOpenReference} />
     </p>
   )
 })
@@ -350,7 +440,13 @@ const LatexBlockView = memo(function LatexBlockView({ block }: { block: LatexBlo
   )
 })
 
-const TableBlockView = memo(function TableBlockView({ block }: { block: TableBlock }) {
+const TableBlockView = memo(function TableBlockView({
+  block,
+  onOpenReference,
+}: {
+  block: TableBlock
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
+}) {
   return (
     <div className="overflow-x-auto rounded-lg border border-academic-border bg-white">
       <table className="min-w-full border-collapse text-left text-sm">
@@ -374,7 +470,7 @@ const TableBlockView = memo(function TableBlockView({ block }: { block: TableBlo
                   key={`${block.id}-cell-${rowIndex}-${cellIndex}`}
                   className="border-b border-academic-border/70 px-3 py-2 align-top text-academic-text/90"
                 >
-                  <InlineLatexText text={cell} />
+                  <InlineLatexText text={cell} onOpenReference={onOpenReference} />
                 </td>
               ))}
             </tr>
@@ -424,21 +520,33 @@ const ImageBlockView = memo(function ImageBlockView({ block }: { block: ImageBlo
   )
 })
 
-const BlockRenderer = memo(function BlockRenderer({ block }: { block: ContentBlock }) {
+const BlockRenderer = memo(function BlockRenderer({
+  block,
+  onOpenReference,
+}: {
+  block: ContentBlock
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
+}) {
   switch (block.type) {
     case 'table':
-      return <TableBlockView block={block} />
+      return <TableBlockView block={block} onOpenReference={onOpenReference} />
     case 'image':
       return <ImageBlockView block={block} />
     case 'latex':
       return <LatexBlockView block={block} />
     case 'paragraph':
     default:
-      return <ParagraphBlockView block={block} />
+      return <ParagraphBlockView block={block} onOpenReference={onOpenReference} />
   }
 })
 
-const RenderPageView = memo(function RenderPageView({ page }: { page: RenderPage }) {
+const RenderPageView = memo(function RenderPageView({
+  page,
+  onOpenReference,
+}: {
+  page: RenderPage
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
+}) {
   return (
     <section
       className="rounded-xl border border-academic-border bg-white p-6 shadow-sm"
@@ -465,7 +573,11 @@ const RenderPageView = memo(function RenderPageView({ page }: { page: RenderPage
 
       <div className="space-y-5">
         {page.blocks.map((block) => (
-          <BlockRenderer key={block.id} block={block} />
+          <BlockRenderer
+            key={block.id}
+            block={block}
+            onOpenReference={onOpenReference}
+          />
         ))}
       </div>
     </section>
@@ -475,9 +587,11 @@ const RenderPageView = memo(function RenderPageView({ page }: { page: RenderPage
 export function PreactDocumentRenderer({
   paper,
   enablePerfLog = false,
+  onOpenReference,
 }: {
   paper: LiteratureDetail
   enablePerfLog?: boolean
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
 }) {
   // Optimization: useMemo keeps expensive block parsing/page batching off the hot path.
   const pages = useMemo(
@@ -521,7 +635,11 @@ export function PreactDocumentRenderer({
     <>
       <div className="space-y-8">
         {visiblePages.map((page) => (
-          <RenderPageView key={page.id} page={page} />
+          <RenderPageView
+            key={page.id}
+            page={page}
+            onOpenReference={onOpenReference}
+          />
         ))}
       </div>
 

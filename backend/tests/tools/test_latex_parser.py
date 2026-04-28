@@ -243,3 +243,16 @@ OPT & 57.8 & 30.5 \\
         assert "results" in sections
         assert "![Scaling trend during training](figs/plot.pdf)" in sections["results"]
         assert "wrapfigure" not in sections["results"]
+
+    def test_clean_latex_preserves_href_and_url_targets(self):
+        """测试 href/url 链接在清洗后仍可用于前端跳转"""
+        latex_content = r"""
+\section{References}
+See \href{https://arxiv.org/abs/2407.07093}{arXiv:2407.07093} and
+\url{https://example.com/project-page}.
+"""
+        sections = _parse_sections(latex_content)
+
+        assert "references" in sections
+        assert "[arXiv:2407.07093](https://arxiv.org/abs/2407.07093)" in sections["references"]
+        assert "https://example.com/project-page" in sections["references"]

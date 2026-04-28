@@ -77,6 +77,47 @@ body {
   overflow: hidden;
   user-select: text;
   cursor: text;
+  z-index: 10;
+}
+
+.pdf-link-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 14;
+}
+
+.pdf-link-layer__anchor {
+  position: absolute;
+  pointer-events: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: inset 0 -3px 0 0 rgba(59, 130, 246, 0.62);
+  cursor: pointer;
+  transition: box-shadow 0.18s ease;
+}
+
+.pdf-link-layer__anchor:hover {
+  box-shadow: inset 0 -3px 0 0 rgba(37, 99, 235, 0.88);
+}
+
+.literature-inline-link,
+.literature-inline-link:visited {
+  color: inherit;
+  font-style: inherit;
+  font-weight: inherit;
+  text-decoration-line: underline;
+  text-decoration-color: rgba(59, 130, 246, 0.88);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 5px;
+  text-decoration-skip-ink: auto;
+}
+
+.literature-inline-link:hover,
+.literature-inline-link:focus-visible {
+  color: inherit;
+  text-decoration-color: rgba(37, 99, 235, 0.96);
 }
 
 .pdf-text-layer__text {

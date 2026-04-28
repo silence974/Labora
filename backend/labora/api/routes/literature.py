@@ -5,16 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import math
 import mimetypes
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from labora.services import LiteratureLibrary
@@ -23,7 +25,8 @@ from labora.tools.latex_parser import parse_latex_from_archive
 
 router = APIRouter()
 library = LiteratureLibrary()
-ORIGINAL_CONTENT_VERSION = 3
+ORIGINAL_CONTENT_VERSION = 4
+EXTERNAL_PREVIEW_ALLOWED_SCHEMES = {"http", "https"}
 
 
 class LiteratureSearchRequest(BaseModel):
@@ -135,6 +138,30 @@ def _build_pdf_view_url(request: Request, paper_id: str) -> str:
             paper_id=_normalize_paper_id(paper_id),
         )
     )
+
+
+def _validate_external_preview_url(url: str) -> str:
+    normalized_url = url.strip()
+    parsed = urlparse(normalized_url)
+    if parsed.scheme.lower() not in EXTERNAL_PREVIEW_ALLOWED_SCHEMES or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Only http/https external URLs are supported")
+    return normalized_url
+
+
+def _inject_external_preview_base(html_content: str, source_url: str) -> str:
+    base_tag = f'<base href="{html.escape(source_url, quote=True)}">'
+    lowercase_content = html_content.lower()
+
+    if "<head" in lowercase_content:
+        head_close_index = lowercase_content.find(">", lowercase_content.find("<head"))
+        if head_close_index != -1:
+            return (
+                html_content[: head_close_index + 1]
+                + base_tag
+                + html_content[head_close_index + 1 :]
+            )
+
+    return f"<head>{base_tag}</head>{html_content}"
 
 
 def _build_minimal_paper(paper_id: str) -> Dict[str, Any]:
@@ -746,6 +773,52 @@ async def get_literature_pdf_view(paper_id: str):
             "Cache-Control": "public, max-age=3600",
             "Content-Disposition": f'inline; filename="{normalized_id}.pdf"',
         },
+    )
+
+
+@router.get("/external-preview")
+async def get_external_preview(url: str = Query(..., min_length=1)):
+    """
+    代理外部网页预览，移除原站禁止 iframe 的响应头影响。
+    """
+    normalized_url = _validate_external_preview_url(url)
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            upstream_response = await client.get(
+                normalized_url,
+                headers={
+                    "User-Agent": "Labora/0.1 external-preview",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            upstream_response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to load external page preview: {exc}",
+        ) from exc
+
+    content_type = upstream_response.headers.get("content-type", "text/html; charset=utf-8")
+    cache_headers = {
+        "Cache-Control": "no-store",
+    }
+
+    if "text/html" in content_type.lower():
+        proxied_html = _inject_external_preview_base(
+            upstream_response.text,
+            str(upstream_response.url),
+        )
+        return Response(
+            content=proxied_html,
+            media_type="text/html",
+            headers=cache_headers,
+        )
+
+    return Response(
+        content=upstream_response.content,
+        media_type=content_type.split(";")[0].strip() or "application/octet-stream",
+        headers=cache_headers,
     )
 
 

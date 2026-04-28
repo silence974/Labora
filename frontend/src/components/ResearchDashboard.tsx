@@ -7,6 +7,7 @@ import type { LiteratureDetail, LiteratureItem, RecentPaper } from '../api/liter
 import { PreactDocumentRenderer } from './PreactDocumentRenderer'
 import { PdfPaperViewer } from './PdfPaperViewer'
 import type { ReaderAnnotation } from './PdfPaperViewer'
+import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 
 interface StartDeepReadDetail {
   paperTitle?: string
@@ -17,6 +18,29 @@ interface StartDeepReadDetail {
 function openDownloadLink(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
+
+type ReferencePreviewState =
+  | {
+      kind: 'closed'
+    }
+  | {
+      kind: 'paper-loading'
+      paperId: string
+    }
+  | {
+      kind: 'paper-ready'
+      paper: LiteratureDetail
+    }
+  | {
+      kind: 'paper-error'
+      paperId: string
+      message: string
+    }
+  | {
+      kind: 'external'
+      href: string
+      label: string
+    }
 
 export function ResearchDashboard() {
   const [showDocDetails, setShowDocDetails] = useState(false)
@@ -42,68 +66,70 @@ export function ResearchDashboard() {
       {/* Main Content */}
       <main className="flex-1 flex overflow-hidden">
 
-        {/* Leftmost Sidebar */}
-        <aside className="w-12 bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shrink-0 z-20 shadow-sm transition-all hover:w-40 group">
-          <div className="mb-6 w-full px-2">
-            <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
-              <i className="fa-solid fa-file-circle-plus"></i>
-              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
-            </button>
-          </div>
-
-          <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
-            <div
-              className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                activeLeftDoc === 'methodology'
-                  ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                  : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-              }`}
-              onClick={() => setActiveLeftDoc('methodology')}
-            >
-              <i className="fa-solid fa-file-lines"></i>
-              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
+        <div className="flex-1 min-w-0 flex overflow-hidden">
+          {/* Leftmost Sidebar */}
+          <aside className="w-12 bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shrink-0 z-20 shadow-sm transition-all hover:w-40 group">
+            <div className="mb-6 w-full px-2">
+              <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
+                <i className="fa-solid fa-file-circle-plus"></i>
+                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
+              </button>
             </div>
 
-            <div
-              className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                activeLeftDoc === 'litReview'
-                  ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                  : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-              }`}
-              onClick={() => setActiveLeftDoc('litReview')}
-            >
-              <i className="fa-regular fa-file-pdf"></i>
-              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+            <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
+              <div
+                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                  activeLeftDoc === 'methodology'
+                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                }`}
+                onClick={() => setActiveLeftDoc('methodology')}
+              >
+                <i className="fa-solid fa-file-lines"></i>
+                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
+              </div>
+
+              <div
+                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                  activeLeftDoc === 'litReview'
+                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                }`}
+                onClick={() => setActiveLeftDoc('litReview')}
+              >
+                <i className="fa-regular fa-file-pdf"></i>
+                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+              </div>
+
+              <div
+                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                  activeLeftDoc === 'dataAnalysis'
+                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                }`}
+                onClick={() => setActiveLeftDoc('dataAnalysis')}
+              >
+                <i className="fa-regular fa-file-word"></i>
+                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
+              </div>
             </div>
 
-            <div
-              className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                activeLeftDoc === 'dataAnalysis'
-                  ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                  : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-              }`}
-              onClick={() => setActiveLeftDoc('dataAnalysis')}
-            >
-              <i className="fa-regular fa-file-word"></i>
-              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
+            <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
+              <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
+                <i className="fa-solid fa-box-archive"></i>
+                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
+              </button>
             </div>
-          </div>
+          </aside>
 
-          <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
-            <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
-              <i className="fa-solid fa-box-archive"></i>
-              <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
-            </button>
-          </div>
-        </aside>
-
-        {/* Left Workspace */}
-        <LeftWorkspace
-          showDocDetails={showDocDetails}
-          onCloseDetails={() => setShowDocDetails(false)}
-          activeLeftDoc={activeLeftDoc}
-          setActiveLeftDoc={setActiveLeftDoc}
-        />
+          {/* Left Workspace */}
+          <LeftWorkspace
+            showDocDetails={showDocDetails}
+            onCloseDetails={() => setShowDocDetails(false)}
+            activeLeftDoc={activeLeftDoc}
+            setActiveLeftDoc={setActiveLeftDoc}
+          />
+        </div>
 
         {/* Right Workspace */}
         <RightWorkspace />
@@ -170,7 +196,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   }, [setActiveLeftDoc])
 
   return (
-    <section className="flex-[1.2] flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
+    <section className="flex-1 min-w-0 flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
 
       {/* Document Details Card */}
       {showDocDetails && (
@@ -584,9 +610,12 @@ function RightWorkspace() {
   const [isDownloadingPaper, setIsDownloadingPaper] = useState(false)
   const [paperError, setPaperError] = useState<string | null>(null)
   const [annotations, setAnnotations] = useState<ReaderAnnotation[]>([])
+  const [referencePreview, setReferencePreview] = useState<ReferencePreviewState>({ kind: 'closed' })
+  const referencePreviewRequestTokenRef = useRef(0)
 
   const activePaper = openPapers.find((paper) => paper.paper_id === activePaperId) ?? null
   const isSearchVisible = showSearch || openPapers.length === 0
+  const isReferencePreviewOpen = referencePreview.kind !== 'closed'
 
   const handleClosePaper = (paperId: string, event: MouseEvent<HTMLElement>) => {
     event.stopPropagation()
@@ -601,31 +630,94 @@ function RightWorkspace() {
     }
   }
 
-  const handleOpenPaper = async (paper: LiteratureItem): Promise<LiteratureDetail | null> => {
+  const openPaperDetail = (detail: LiteratureDetail) => {
+    setOpenPapers((previous) => {
+      const existingIndex = previous.findIndex((item) => item.paper_id === detail.paper_id)
+      if (existingIndex === -1) {
+        return [...previous, detail]
+      }
+
+      const next = [...previous]
+      next[existingIndex] = detail
+      return next
+    })
+
+    setActivePaperId(detail.paper_id)
+    setShowSearch(false)
+  }
+
+  const handleOpenPaperById = async (paperId: string): Promise<LiteratureDetail | null> => {
     setPaperError(null)
 
     try {
-      const detail = await literatureApi.getPaperDetail(paper.paper_id)
-
-      setOpenPapers((previous) => {
-        const existingIndex = previous.findIndex((item) => item.paper_id === detail.paper_id)
-        if (existingIndex === -1) {
-          return [...previous, detail]
-        }
-
-        const next = [...previous]
-        next[existingIndex] = detail
-        return next
-      })
-
-      setActivePaperId(detail.paper_id)
-      setShowSearch(false)
+      const detail = await literatureApi.getPaperDetail(paperId)
+      openPaperDetail(detail)
       return detail
     } catch (error) {
       console.error('Failed to open paper:', error)
       setPaperError(error instanceof Error ? error.message : 'Failed to open paper')
       return null
     }
+  }
+
+  const handleOpenPaper = async (paper: LiteratureItem): Promise<LiteratureDetail | null> => {
+    return handleOpenPaperById(paper.paper_id)
+  }
+
+  const handleCloseReferencePreview = () => {
+    referencePreviewRequestTokenRef.current += 1
+    setReferencePreview({ kind: 'closed' })
+  }
+
+  const handleOpenReferencePreview = async (target: LiteratureReferenceTarget) => {
+    if (!target.isArxiv || !target.paperId) {
+      referencePreviewRequestTokenRef.current += 1
+      setReferencePreview({
+        kind: 'external',
+        href: target.href,
+        label: target.label || target.href,
+      })
+      return
+    }
+
+    const requestToken = referencePreviewRequestTokenRef.current + 1
+    referencePreviewRequestTokenRef.current = requestToken
+    setReferencePreview({
+      kind: 'paper-loading',
+      paperId: target.paperId,
+    })
+
+    try {
+      const detail = await literatureApi.getPaperDetail(target.paperId)
+      if (referencePreviewRequestTokenRef.current !== requestToken) {
+        return
+      }
+
+      setReferencePreview({
+        kind: 'paper-ready',
+        paper: detail,
+      })
+    } catch (error) {
+      if (referencePreviewRequestTokenRef.current !== requestToken) {
+        return
+      }
+
+      console.error('Failed to preview arXiv reference:', error)
+      setReferencePreview({
+        kind: 'paper-error',
+        paperId: target.paperId,
+        message: error instanceof Error ? error.message : 'Failed to preview arXiv reference',
+      })
+    }
+  }
+
+  const handleOpenPreviewPaperInReader = () => {
+    if (referencePreview.kind !== 'paper-ready') {
+      return
+    }
+
+    openPaperDetail(referencePreview.paper)
+    handleCloseReferencePreview()
   }
 
   const handlePaperDownloaded = (paperId: string, localSourceUrl: string) => {
@@ -696,9 +788,30 @@ function RightWorkspace() {
   const activeAnnotations = activePaper
     ? annotations.filter((annotation) => annotation.paperId === activePaper.paper_id)
     : []
+  const referencePreviewAnnotations =
+    referencePreview.kind === 'paper-ready'
+      ? annotations.filter((annotation) => annotation.paperId === referencePreview.paper.paper_id)
+      : []
+
+  useEffect(() => {
+    if (!isReferencePreviewOpen) {
+      return
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        handleCloseReferencePreview()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isReferencePreviewOpen])
 
   return (
-    <section className="flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
+    <section className="relative flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-1 overflow-x-auto">
           {openPapers.length === 0 ? (
@@ -798,12 +911,108 @@ function RightWorkspace() {
             paper={activePaper}
             annotations={activeAnnotations}
             onCreateAnnotation={handleCreateAnnotation}
+            onOpenReference={handleOpenReferencePreview}
           />
           <AnnotationPanel
             annotations={activeAnnotations}
             onUpdateAnnotationNote={handleUpdateAnnotationNote}
           />
       </div>
+
+      {isReferencePreviewOpen ? (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/28 backdrop-blur-[1px]"
+          onClick={handleCloseReferencePreview}
+        >
+          <div
+            className="flex h-[84%] w-[80%] min-w-0 flex-col overflow-hidden rounded-2xl border border-academic-border bg-academic-panel shadow-[0_20px_60px_rgba(15,23,42,0.24)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-academic-border px-4 py-3 shrink-0">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-academic-muted">
+                  {referencePreview.kind === 'external' ? 'External Link Preview' : 'arXiv Reference Preview'}
+                </p>
+                <p className="truncate text-sm text-academic-text">
+                  {referencePreview.kind === 'paper-ready'
+                    ? referencePreview.paper.title
+                    : referencePreview.kind === 'paper-loading'
+                      ? referencePreview.paperId
+                      : referencePreview.kind === 'paper-error'
+                        ? referencePreview.paperId
+                        : referencePreview.kind === 'external'
+                          ? referencePreview.label
+                          : 'Loading reference...'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {referencePreview.kind === 'paper-ready' ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenPreviewPaperInReader}
+                    className="rounded-md border border-academic-border bg-white px-3 py-1.5 text-xs text-academic-text transition-colors hover:bg-academic-hover"
+                  >
+                    在阅读器中打开
+                  </button>
+                ) : null}
+                {referencePreview.kind === 'external' ? (
+                  <a
+                    href={referencePreview.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-md border border-academic-border bg-white px-3 py-1.5 text-xs text-academic-text transition-colors hover:bg-academic-hover"
+                  >
+                    新标签打开
+                  </a>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={handleCloseReferencePreview}
+                  className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover text-academic-text transition-colors hover:bg-academic-border"
+                  title="关闭预览"
+                  aria-label="关闭预览"
+                >
+                  <i className="fa-solid fa-xmark text-sm"></i>
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 bg-academic-bg p-3">
+              {referencePreview.kind === 'paper-error' ? (
+                <div className="flex h-full items-center justify-center rounded-xl border border-red-200 bg-red-50 px-6 text-center text-sm text-red-600">
+                  {referencePreview.message}
+                </div>
+              ) : referencePreview.kind === 'paper-ready' ? (
+                <div className="flex h-full min-h-0 overflow-hidden rounded-xl">
+                  <LaTeXViewer
+                    paper={referencePreview.paper}
+                    annotations={referencePreviewAnnotations}
+                    onCreateAnnotation={handleCreateAnnotation}
+                    onOpenReference={handleOpenReferencePreview}
+                  />
+                </div>
+              ) : referencePreview.kind === 'external' ? (
+                <div className="flex h-full min-h-0 overflow-hidden rounded-xl border border-academic-border bg-white">
+                  <iframe
+                    src={literatureApi.buildExternalPreviewUrl(referencePreview.href)}
+                    title={referencePreview.label}
+                    className="h-full w-full border-0 bg-white"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                  />
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center rounded-xl border border-academic-border bg-white text-academic-muted">
+                  <div className="text-center">
+                    <i className="fa-solid fa-spinner fa-spin text-2xl"></i>
+                    <p className="mt-3 text-sm">Loading arXiv reference preview...</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -1268,10 +1477,12 @@ function LaTeXViewer({
   paper,
   annotations,
   onCreateAnnotation,
+  onOpenReference,
 }: {
   paper: LiteratureDetail | null
   annotations: ReaderAnnotation[]
   onCreateAnnotation: (annotation: ReaderAnnotation) => void
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
 }) {
   if (!paper) {
     return (
@@ -1545,16 +1756,21 @@ function LaTeXViewer({
 
               <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
                 {paper.url && (
-                  <a
-                    href={paper.url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenReference?.({
+                        label: paper.title,
+                        href: paper.url!,
+                        isArxiv: false,
+                      })
+                    }
                     className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover border border-academic-border text-academic-text hover:bg-academic-border transition-colors"
                     title="Open Source Page"
                     aria-label="Open Source Page"
                   >
                     <i className="fa-solid fa-arrow-up-right-from-square text-xs"></i>
-                  </a>
+                  </button>
                 )}
               </div>
             </div>
@@ -1578,9 +1794,14 @@ function LaTeXViewer({
                 paperTitle={paper.title}
                 annotations={annotations}
                 onCreateAnnotation={onCreateAnnotation}
+                onOpenReference={onOpenReference}
                 fallback={
                   paper.original_sections.length > 0 ? (
-                    <PreactDocumentRenderer paper={paper} enablePerfLog={false} />
+                    <PreactDocumentRenderer
+                      paper={paper}
+                      enablePerfLog={false}
+                      onOpenReference={onOpenReference}
+                    />
                   ) : (
                     <section className="text-center text-academic-muted py-12">
                       <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
@@ -1591,7 +1812,11 @@ function LaTeXViewer({
               />
             </>
           ) : paper.original_sections.length > 0 ? (
-            <PreactDocumentRenderer paper={paper} enablePerfLog={false} />
+            <PreactDocumentRenderer
+              paper={paper}
+              enablePerfLog={false}
+              onOpenReference={onOpenReference}
+            />
           ) : (
             <section className="text-center text-academic-muted py-12">
               <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
@@ -1646,66 +1871,68 @@ function AnnotationPanel({
   }, [isCollapsed, activeTab])
 
   return (
-    <div className={`relative flex items-start justify-end transition-all duration-300 ${isCollapsed ? 'flex-none' : 'flex-1'}`}>
-      {/* Panel and Bookmarks Container */}
-      <div className="flex items-start">
-        {/* Expanded Panel */}
-        <aside className={`bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-all duration-300 ${
-          isCollapsed ? 'w-0 opacity-0 border-0' : 'w-80 opacity-100'
-        }`}>
-          {!isCollapsed && (
-            <div className="flex-1 p-3 overflow-y-auto flex flex-col gap-2">
-              {activeTab === 'notes' && (
-                <>
-                  {annotations.length > 0 ? (
-                    annotations.map((annotation) => (
-                      <div key={annotation.id} className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
-                        <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
-                          <span>Page {annotation.pageNumber}</span>
-                          <span>{new Date(annotation.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                        </div>
-                        <blockquote className="text-xs font-serif italic border-l-2 border-academic-accent pl-2 text-academic-text/80 mb-3">
-                          "{annotation.quote}"
-                        </blockquote>
-                        <textarea
-                          className="w-full bg-white border border-academic-border rounded-md p-2 text-sm resize-none focus:outline-none focus:border-academic-accent transition-colors"
-                          rows={3}
-                          placeholder="Add your thoughts here..."
-                          value={annotation.note}
-                          onChange={(event) => onUpdateAnnotationNote(annotation.id, event.currentTarget.value)}
-                        />
+    <div
+      className={`relative shrink-0 overflow-hidden transition-[width] duration-300 ease-out ${
+        isCollapsed ? 'w-0' : 'w-80'
+      }`}
+    >
+      <aside
+        className={`h-full w-80 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-opacity duration-200 ${
+          isCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        }`}
+      >
+        {!isCollapsed && (
+          <div className="flex-1 p-3 overflow-y-auto flex flex-col gap-2">
+            {activeTab === 'notes' && (
+              <>
+                {annotations.length > 0 ? (
+                  annotations.map((annotation) => (
+                    <div key={annotation.id} className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
+                      <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
+                        <span>Page {annotation.pageNumber}</span>
+                        <span>{new Date(annotation.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
-                    ))
-                  ) : null}
+                      <blockquote className="text-xs font-serif italic border-l-2 border-academic-accent pl-2 text-academic-text/80 mb-3">
+                        "{annotation.quote}"
+                      </blockquote>
+                      <textarea
+                        className="w-full bg-white border border-academic-border rounded-md p-2 text-sm resize-none focus:outline-none focus:border-academic-accent transition-colors"
+                        rows={3}
+                        placeholder="Add your thoughts here..."
+                        value={annotation.note}
+                        onChange={(event) => onUpdateAnnotationNote(annotation.id, event.currentTarget.value)}
+                      />
+                    </div>
+                  ))
+                ) : null}
 
-                  <div className="border-2 border-dashed border-academic-border rounded-lg p-6 text-center text-academic-muted hover:bg-academic-hover hover:border-academic-muted transition-all">
-                    <i className="fa-solid fa-highlighter mb-2"></i>
-                    <p className="text-xs">
-                      {annotations.length > 0
-                        ? 'Select more text in the viewer and click 标记 to add another note anchor.'
-                        : 'Select text in the viewer and click 标记 to create your first annotation.'}
-                    </p>
-                  </div>
-                </>
-              )}
-
-              {activeTab === 'deepRead' && (
-                <div className="text-center text-academic-muted py-8">
-                  <i className="fa-solid fa-brain text-3xl mb-3 opacity-30"></i>
-                  <p className="text-sm">深度阅读功能开发中...</p>
+                <div className="border-2 border-dashed border-academic-border rounded-lg p-6 text-center text-academic-muted hover:bg-academic-hover hover:border-academic-muted transition-all">
+                  <i className="fa-solid fa-highlighter mb-2"></i>
+                  <p className="text-xs">
+                    {annotations.length > 0
+                      ? 'Select more text in the viewer and click 标记 to add another note anchor.'
+                      : 'Select text in the viewer and click 标记 to create your first annotation.'}
+                  </p>
                 </div>
-              )}
+              </>
+            )}
 
-              {activeTab === 'jumpResult' && (
-                <div className="text-center text-academic-muted py-8">
-                  <i className="fa-solid fa-arrow-right text-3xl mb-3 opacity-30"></i>
-                  <p className="text-sm">跳转结果功能开发中...</p>
-                </div>
-              )}
-            </div>
-          )}
-        </aside>
-      </div>
+            {activeTab === 'deepRead' && (
+              <div className="text-center text-academic-muted py-8">
+                <i className="fa-solid fa-brain text-3xl mb-3 opacity-30"></i>
+                <p className="text-sm">深度阅读功能开发中...</p>
+              </div>
+            )}
+
+            {activeTab === 'jumpResult' && (
+              <div className="text-center text-academic-muted py-8">
+                <i className="fa-solid fa-arrow-right text-3xl mb-3 opacity-30"></i>
+                <p className="text-sm">跳转结果功能开发中...</p>
+              </div>
+            )}
+          </div>
+        )}
+      </aside>
     </div>
   )
 }

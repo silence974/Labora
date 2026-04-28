@@ -1,6 +1,8 @@
 import type { ComponentChildren } from 'preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import { findReferenceMatches, resolveReferenceTarget } from '../utils/literatureLinks'
+import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 
 const DEFAULT_PAGE_RATIO = 1.414
 const PAGE_ROOT_MARGIN = '1400px 0px'
@@ -56,6 +58,21 @@ interface RenderedPageSnapshot {
   canvas: HTMLCanvasElement
   textSpans: PositionedTextSpan[]
   cropBounds: PageCropBounds
+  viewport: {
+    convertToViewportRectangle(rect: number[]): number[]
+  }
+}
+
+interface PdfPageLinkOverlay {
+  id: string
+  left: number
+  top: number
+  width: number
+  height: number
+  href?: string
+  paperId?: string
+  dest?: unknown
+  title: string
 }
 
 const HORIZONTAL_TEXT_SIN_THRESHOLD = 0.35
@@ -107,6 +124,92 @@ function containsSelectionNode(container: HTMLElement, node: Node | null): boole
 
   const target = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as HTMLElement)
   return Boolean(target && container.contains(target))
+}
+
+function buildPdfLinkTitle(href?: string, paperId?: string, hasDestination?: boolean) {
+  if (paperId) {
+    return `Open arXiv reference ${paperId}`
+  }
+
+  if (href) {
+    return `Open link ${href}`
+  }
+
+  if (hasDestination) {
+    return 'Jump to linked location'
+  }
+
+  return 'Open link'
+}
+
+function clampOverlayRect(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  pageWidth: number,
+  pageHeight: number,
+) {
+  const clampedLeft = clamp(left, 0, pageWidth)
+  const clampedTop = clamp(top, 0, pageHeight)
+  const clampedRight = clamp(left + width, clampedLeft, pageWidth)
+  const clampedBottom = clamp(top + height, clampedTop, pageHeight)
+
+  return {
+    left: clampedLeft,
+    top: clampedTop,
+    width: Math.max(0, clampedRight - clampedLeft),
+    height: Math.max(0, clampedBottom - clampedTop),
+  }
+}
+
+function dedupePageLinks(links: PdfPageLinkOverlay[]): PdfPageLinkOverlay[] {
+  const deduped: PdfPageLinkOverlay[] = []
+
+  links.forEach((link) => {
+    const targetKey = link.paperId || link.href || String(link.dest || '')
+    const duplicate = deduped.some(
+      (candidate) =>
+        (candidate.paperId || candidate.href || String(candidate.dest || '')) === targetKey &&
+        Math.abs(candidate.left - link.left) < 18 &&
+        Math.abs(candidate.top - link.top) < 12,
+    )
+
+    if (!duplicate) {
+      deduped.push(link)
+    }
+  })
+
+  return deduped
+}
+
+async function navigatePdfDestination(
+  pdfDocument: PDFDocumentProxy,
+  destination: unknown,
+) {
+  const resolvedDestination =
+    typeof destination === 'string'
+      ? await pdfDocument.getDestination(destination)
+      : destination
+
+  if (!Array.isArray(resolvedDestination) || resolvedDestination.length === 0) {
+    return
+  }
+
+  const pageReference = resolvedDestination[0]
+  if (!pageReference || typeof pageReference !== 'object') {
+    return
+  }
+
+  try {
+    const pageIndex = await pdfDocument.getPageIndex(pageReference as never)
+    const pageNode = document.querySelector<HTMLElement>(
+      `[data-pdf-page-number="${pageIndex + 1}"]`,
+    )
+    pageNode?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } catch {
+    // Ignore unresolved PDF destinations; external links and arXiv refs still work.
+  }
 }
 
 function computeAutoCropBounds(
@@ -283,12 +386,14 @@ function PdfPageCanvas({
   pageNumber,
   annotations,
   onCreateAnnotation,
+  onOpenReference,
 }: {
   paperId: string
   pdfDocument: PDFDocumentProxy
   pageNumber: number
   annotations: ReaderAnnotation[]
   onCreateAnnotation?: (annotation: ReaderAnnotation) => void
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const frameRef = useRef<HTMLDivElement | null>(null)
@@ -303,6 +408,7 @@ function PdfPageCanvas({
   const [frameWidth, setFrameWidth] = useState(0)
   const [pageError, setPageError] = useState<string | null>(null)
   const [textSpans, setTextSpans] = useState<PositionedTextSpan[]>([])
+  const [pageLinks, setPageLinks] = useState<PdfPageLinkOverlay[]>([])
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 })
   const [pendingSelection, setPendingSelection] = useState<{
     quote: string
@@ -375,6 +481,7 @@ function PdfPageCanvas({
         }
 
         const textContent = await page.getTextContent()
+        const pageAnnotations = await page.getAnnotations()
         const baseScale = availableWidth / baseViewport.width
 
         const renderSnapshot = async (renderBoost: number): Promise<RenderedPageSnapshot> => {
@@ -453,6 +560,7 @@ function PdfPageCanvas({
               availableWidth,
               devicePixelRatio,
             }),
+            viewport,
           }
         }
 
@@ -481,6 +589,14 @@ function PdfPageCanvas({
           const displayHeightCss = cropHeightCss * displayScale
           const outputWidth = Math.max(1, Math.round(cropBounds.width * displayScale))
           const outputHeight = Math.max(1, Math.round(cropBounds.height * displayScale))
+          const mappedTextSpans = finalSnapshot.textSpans.map((span) => ({
+            ...span,
+            left: (span.left - cropLeftCss) * displayScale,
+            top: (span.top - cropTopCss) * displayScale,
+            width: span.width * displayScale,
+            height: span.height * displayScale,
+            fontSize: span.fontSize * displayScale,
+          }))
 
           const context = canvas.getContext('2d', { alpha: false })
           if (!context) {
@@ -505,18 +621,100 @@ function PdfPageCanvas({
             outputHeight,
           )
 
+          const annotationLinks = pageAnnotations.flatMap((annotation, index) => {
+              const rect = Array.isArray(annotation.rect) ? annotation.rect : null
+              if (!rect || rect.length !== 4) {
+                return []
+              }
+
+              const href =
+                typeof annotation.url === 'string'
+                  ? annotation.url
+                  : typeof annotation.unsafeUrl === 'string'
+                    ? annotation.unsafeUrl
+                    : undefined
+              const linkTarget = href ? resolveReferenceTarget(href) : null
+              const paperReferenceId = linkTarget?.paperId
+
+              const viewportRect = finalSnapshot.viewport.convertToViewportRectangle(rect)
+              const rawLeft = (Math.min(viewportRect[0], viewportRect[2]) - cropLeftCss) * displayScale
+              const rawTop = (Math.min(viewportRect[1], viewportRect[3]) - cropTopCss) * displayScale
+              const rawWidth = Math.abs(viewportRect[2] - viewportRect[0]) * displayScale
+              const rawHeight = Math.abs(viewportRect[3] - viewportRect[1]) * displayScale
+              const normalizedRect = clampOverlayRect(
+                rawLeft,
+                rawTop,
+                rawWidth,
+                rawHeight,
+                displayWidthCss,
+                displayHeightCss,
+              )
+
+              if (normalizedRect.width < 6 || normalizedRect.height < 6) {
+                return []
+              }
+
+              return [{
+                id: `${pageNumber}-annotation-link-${index + 1}`,
+                left: normalizedRect.left,
+                top: normalizedRect.top,
+                width: normalizedRect.width,
+                height: normalizedRect.height,
+                href,
+                paperId: paperReferenceId,
+                dest: annotation.dest,
+                title: buildPdfLinkTitle(href, paperReferenceId, Boolean(annotation.dest)),
+              } satisfies PdfPageLinkOverlay]
+            })
+
+          const inferredTextLinks = mappedTextSpans
+            .filter((span) => isMostlyHorizontal(span.rotation) && span.width >= 18)
+            .flatMap((span) => {
+              const matches = findReferenceMatches(span.text)
+              if (matches.length === 0) {
+                return []
+              }
+
+              const totalLength = Math.max(span.text.length, 1)
+              return matches.flatMap((match, index) => {
+                const startRatio = match.start / totalLength
+                const widthRatio = Math.max((match.end - match.start) / totalLength, 0.16)
+                const rawLeft = span.left + span.width * startRatio
+                const rawWidth = span.width * widthRatio
+                const normalizedRect = clampOverlayRect(
+                  rawLeft,
+                  span.top,
+                  rawWidth,
+                  span.height,
+                  displayWidthCss,
+                  displayHeightCss,
+                )
+
+                if (normalizedRect.width < 12 || normalizedRect.height < 8) {
+                  return []
+                }
+
+                return [{
+                  id: `${span.id}-text-link-${index + 1}`,
+                  left: normalizedRect.left,
+                  top: normalizedRect.top,
+                  width: normalizedRect.width,
+                  height: normalizedRect.height,
+                  href: match.target.href,
+                  paperId: match.target.paperId,
+                  title: buildPdfLinkTitle(
+                    match.target.href,
+                    match.target.paperId,
+                    false,
+                  ),
+                } satisfies PdfPageLinkOverlay]
+              })
+            })
+
           setPageRatio(displayHeightCss / displayWidthCss)
           setPageSize({ width: displayWidthCss, height: displayHeightCss })
-          setTextSpans(
-            finalSnapshot.textSpans.map((span) => ({
-              ...span,
-              left: (span.left - cropLeftCss) * displayScale,
-              top: (span.top - cropTopCss) * displayScale,
-              width: span.width * displayScale,
-              height: span.height * displayScale,
-              fontSize: span.fontSize * displayScale,
-            }))
-          )
+          setTextSpans(mappedTextSpans)
+          setPageLinks(dedupePageLinks([...annotationLinks, ...inferredTextLinks]))
           setHasRendered(true)
           setPageError(null)
         }
@@ -537,6 +735,10 @@ function PdfPageCanvas({
 
   useEffect(() => {
     setPendingSelection(null)
+  }, [pageNumber, paperId])
+
+  useEffect(() => {
+    setPageLinks([])
   }, [pageNumber, paperId])
 
   const placeholderHeight = Math.max(frameWidth * pageRatio, 320)
@@ -608,8 +810,40 @@ function PdfPageCanvas({
     })
   }
 
+  const handleLinkActivate = async (link: PdfPageLinkOverlay) => {
+    setPendingSelection(null)
+
+    if (link.paperId && onOpenReference) {
+      onOpenReference({
+        label: link.paperId,
+        href: link.href ?? `https://arxiv.org/abs/${link.paperId}`,
+        isArxiv: true,
+        paperId: link.paperId,
+      })
+      return
+    }
+
+    if (link.dest != null) {
+      await navigatePdfDestination(pdfDocument, link.dest)
+      return
+    }
+
+    if (link.href && onOpenReference) {
+      onOpenReference({
+        label: link.href,
+        href: link.href,
+        isArxiv: false,
+      })
+      return
+    }
+
+    if (link.href) {
+      window.open(link.href, '_blank', 'noopener,noreferrer')
+    }
+  }
+
   return (
-    <section ref={hostRef} className="w-full">
+    <section ref={hostRef} className="w-full" data-pdf-page-number={pageNumber}>
       <div className="mx-auto mb-2 max-w-[1180px] px-1 text-[10px] uppercase tracking-[0.16em] text-slate-400">
         Page {pageNumber}
       </div>
@@ -654,6 +888,26 @@ function PdfPageCanvas({
                     aria-label={`Typeset preview page ${pageNumber}`}
                     className="absolute inset-0 block max-w-full"
                   />
+                  <div className="pdf-link-layer" aria-hidden="false">
+                    {pageLinks.map((link) => (
+                      <button
+                        key={link.id}
+                        type="button"
+                        className="pdf-link-layer__anchor"
+                        title={link.title}
+                        aria-label={link.title}
+                        style={{
+                          left: `${link.left}px`,
+                          top: `${link.top}px`,
+                          width: `${link.width}px`,
+                          height: `${link.height}px`,
+                        }}
+                        onClick={() => {
+                          void handleLinkActivate(link)
+                        }}
+                      />
+                    ))}
+                  </div>
                   <div
                     ref={textLayerRef}
                     className="pdf-text-layer"
@@ -721,6 +975,7 @@ export function PdfPaperViewer({
   paperTitle,
   annotations,
   onCreateAnnotation,
+  onOpenReference,
   fallback,
 }: {
   paperId: string
@@ -728,6 +983,7 @@ export function PdfPaperViewer({
   paperTitle: string
   annotations?: ReaderAnnotation[]
   onCreateAnnotation?: (annotation: ReaderAnnotation) => void
+  onOpenReference?: (target: LiteratureReferenceTarget) => void
   fallback?: ComponentChildren
 }) {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null)
@@ -822,6 +1078,7 @@ export function PdfPaperViewer({
           pageNumber={index + 1}
           annotations={(annotations ?? []).filter((annotation) => annotation.pageNumber === index + 1)}
           onCreateAnnotation={onCreateAnnotation}
+          onOpenReference={onOpenReference}
         />
       ))}
 
