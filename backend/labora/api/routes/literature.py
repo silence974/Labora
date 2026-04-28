@@ -18,12 +18,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from labora.services import LiteratureLibrary
-from labora.tools import arxiv_get_paper, arxiv_search
+from labora.tools import arxiv_get_paper, arxiv_search, compile_latex_archive_to_pdf
 from labora.tools.latex_parser import parse_latex_from_archive
 
 router = APIRouter()
 library = LiteratureLibrary()
-ORIGINAL_CONTENT_VERSION = 2
+ORIGINAL_CONTENT_VERSION = 3
 
 
 class LiteratureSearchRequest(BaseModel):
@@ -49,6 +49,8 @@ class LiteratureItem(BaseModel):
     source: str
     url: Optional[str] = None
     source_url: Optional[str] = None
+    pdf_url: Optional[str] = None
+    pdf_view_url: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     is_downloaded: bool = False
     local_source_url: Optional[str] = None
@@ -126,6 +128,15 @@ def _build_local_source_url(request: Request, paper_id: str) -> str:
     )
 
 
+def _build_pdf_view_url(request: Request, paper_id: str) -> str:
+    return str(
+        request.url_for(
+            "get_literature_pdf_view",
+            paper_id=_normalize_paper_id(paper_id),
+        )
+    )
+
+
 def _build_minimal_paper(paper_id: str) -> Dict[str, Any]:
     normalized_id = _normalize_paper_id(paper_id)
     return {
@@ -138,6 +149,7 @@ def _build_minimal_paper(paper_id: str) -> Dict[str, Any]:
         "source": "arXiv",
         "url": f"https://arxiv.org/abs/{normalized_id}" if normalized_id else None,
         "source_url": _build_source_url(normalized_id),
+        "pdf_url": f"https://arxiv.org/pdf/{normalized_id}.pdf" if normalized_id else None,
         "tags": [],
     }
 
@@ -182,6 +194,9 @@ def _paper_to_item_dict(paper: Dict[str, Any]) -> Dict[str, Any]:
             f"https://arxiv.org/abs/{normalized_id}" if normalized_id else None
         ),
         "source_url": paper.get("source_url") or _build_source_url(normalized_id),
+        "pdf_url": paper.get("pdf_url") or (
+            f"https://arxiv.org/pdf/{normalized_id}.pdf" if normalized_id else None
+        ),
         "tags": tags,
         "published": paper.get("published"),
         "updated": paper.get("updated"),
@@ -198,6 +213,7 @@ def _enrich_with_local_state(
     stored_paper: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     record = stored_paper or library.get_paper(item_data["paper_id"])
+    item_data["pdf_view_url"] = _build_pdf_view_url(request, item_data["paper_id"])
     if _has_local_source_file(record):
         item_data["is_downloaded"] = True
         item_data["local_source_url"] = _build_local_source_url(request, item_data["paper_id"])
@@ -678,6 +694,59 @@ async def get_downloaded_literature_file(paper_id: str):
 
     media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
     return FileResponse(file_path, media_type=media_type, filename=file_path.name)
+
+
+@router.get("/pdf/{paper_id}", name="get_literature_pdf_view")
+async def get_literature_pdf_view(paper_id: str):
+    """
+    返回由本地 LaTeX 源码编译出的排版预览 PDF，用于前端按页渲染。
+    """
+    normalized_id = _normalize_paper_id(paper_id)
+    stored_paper = library.get_paper(normalized_id) or _build_minimal_paper(normalized_id)
+    paper = await _ensure_local_source_download(stored_paper)
+
+    local_path = paper.get("local_path")
+    if not local_path:
+        raise HTTPException(status_code=404, detail="LaTeX source is not available for preview")
+
+    source_archive = Path(local_path)
+    if not source_archive.exists():
+        raise HTTPException(status_code=404, detail="LaTeX source archive not found")
+
+    compiled_pdf_path = library.resolve_compiled_pdf_path(normalized_id)
+
+    try:
+        compiled_pdf = await asyncio.to_thread(
+            compile_latex_archive_to_pdf,
+            source_archive,
+            compiled_pdf_path,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to compile LaTeX preview: {exc}",
+        ) from exc
+
+    library.upsert_paper(
+        {
+            **paper,
+            "compiled_pdf_path": str(compiled_pdf),
+            "preview_source": "compiled_latex_pdf",
+        },
+        mark_accessed=True,
+        mark_downloaded=_has_local_source_file(paper),
+        local_path=paper.get("local_path"),
+    )
+
+    return FileResponse(
+        compiled_pdf,
+        media_type="application/pdf",
+        filename=f"{normalized_id}.pdf",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Content-Disposition": f'inline; filename="{normalized_id}.pdf"',
+        },
+    )
 
 
 @router.get("/recent")

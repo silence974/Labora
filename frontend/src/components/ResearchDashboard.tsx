@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
-import type { KeyboardEvent, MouseEvent } from 'react'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import type { KeyboardEvent, MouseEvent } from 'preact/compat'
 import { deepReadApi } from '../api/deepRead'
 import type { DeepReadResult } from '../api/deepRead'
 import { literatureApi } from '../api/literature'
 import type { LiteratureDetail, LiteratureItem, RecentPaper } from '../api/literature'
+import { PreactDocumentRenderer } from './PreactDocumentRenderer'
+import { PdfPaperViewer } from './PdfPaperViewer'
+import type { ReaderAnnotation } from './PdfPaperViewer'
 
 interface StartDeepReadDetail {
   paperTitle?: string
@@ -13,223 +16,6 @@ interface StartDeepReadDetail {
 
 function openDownloadLink(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
-}
-
-interface RenderedPaperPage {
-  id: string
-  sectionKey: string
-  sectionTitle: string
-  content: string
-  pageNumber: number
-  isContinuation: boolean
-}
-
-const INITIAL_RENDERED_PAGES = 4
-const RENDER_PAGE_BATCH = 4
-const MAX_CHARS_PER_PAGE = 2600
-
-function splitOversizedBlock(block: string, maxChars: number): string[] {
-  if (block.length <= maxChars) {
-    return [block]
-  }
-
-  const sentenceParts =
-    block.match(/[^.!?]+(?:[.!?]+|$)/g)?.map((part) => part.trim()).filter(Boolean) ?? [block]
-
-  const chunks: string[] = []
-  let currentChunk = ''
-
-  const pushChunk = () => {
-    const normalized = currentChunk.trim()
-    if (normalized) {
-      chunks.push(normalized)
-    }
-    currentChunk = ''
-  }
-
-  for (const sentence of sentenceParts) {
-    if (sentence.length > maxChars) {
-      pushChunk()
-
-      const words = sentence.split(/\s+/).filter(Boolean)
-      let wordChunk = ''
-      for (const word of words) {
-        const candidate = wordChunk ? `${wordChunk} ${word}` : word
-        if (candidate.length > maxChars && wordChunk) {
-          chunks.push(wordChunk)
-          wordChunk = word
-        } else {
-          wordChunk = candidate
-        }
-      }
-      if (wordChunk) {
-        chunks.push(wordChunk)
-      }
-      continue
-    }
-
-    const candidate = currentChunk ? `${currentChunk} ${sentence}` : sentence
-    if (candidate.length > maxChars && currentChunk) {
-      pushChunk()
-      currentChunk = sentence
-    } else {
-      currentChunk = candidate
-    }
-  }
-
-  pushChunk()
-  return chunks
-}
-
-function splitContentIntoPages(content: string, maxChars: number = MAX_CHARS_PER_PAGE): string[] {
-  const normalized = content.replace(/\r\n/g, '\n').trim()
-  if (!normalized) {
-    return []
-  }
-
-  const rawBlocks = normalized
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-
-  const blocks = rawBlocks.length > 0 ? rawBlocks : [normalized]
-  const pages: string[] = []
-  let currentPage = ''
-
-  const pushPage = () => {
-    const page = currentPage.trim()
-    if (page) {
-      pages.push(page)
-    }
-    currentPage = ''
-  }
-
-  for (const block of blocks) {
-    const candidate = currentPage ? `${currentPage}\n\n${block}` : block
-    if (candidate.length <= maxChars) {
-      currentPage = candidate
-      continue
-    }
-
-    if (currentPage) {
-      pushPage()
-    }
-
-    const blockPages = splitOversizedBlock(block, maxChars)
-    if (blockPages.length === 1) {
-      currentPage = blockPages[0]
-      continue
-    }
-
-    for (let index = 0; index < blockPages.length - 1; index += 1) {
-      pages.push(blockPages[index])
-    }
-    currentPage = blockPages[blockPages.length - 1]
-  }
-
-  pushPage()
-  return pages
-}
-
-function buildRenderedPaperPages(paper: LiteratureDetail): RenderedPaperPage[] {
-  let pageNumber = 1
-  const pages: RenderedPaperPage[] = []
-
-  for (const section of paper.original_sections) {
-    const chunks = splitContentIntoPages(section.content)
-    for (let index = 0; index < chunks.length; index += 1) {
-      pages.push({
-        id: `${paper.paper_id}-${section.key}-${index + 1}`,
-        sectionKey: section.key,
-        sectionTitle: section.title,
-        content: chunks[index],
-        pageNumber,
-        isContinuation: index > 0,
-      })
-      pageNumber += 1
-    }
-  }
-
-  return pages
-}
-
-function LazyPaperPages({ paper }: { paper: LiteratureDetail }) {
-  const allPages = buildRenderedPaperPages(paper)
-  const [visiblePageCount, setVisiblePageCount] = useState(
-    Math.min(INITIAL_RENDERED_PAGES, allPages.length),
-  )
-  const loadMoreRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    setVisiblePageCount(Math.min(INITIAL_RENDERED_PAGES, allPages.length))
-  }, [paper.paper_id, allPages.length])
-
-  useEffect(() => {
-    const node = loadMoreRef.current
-    if (!node || visiblePageCount >= allPages.length) {
-      return
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisiblePageCount((current) => Math.min(current + RENDER_PAGE_BATCH, allPages.length))
-        }
-      },
-      {
-        rootMargin: '1200px 0px',
-      },
-    )
-
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [allPages.length, paper.paper_id, visiblePageCount])
-
-  const visiblePages = allPages.slice(0, visiblePageCount)
-
-  return (
-    <>
-      <div className="space-y-8">
-        {visiblePages.map((page) => (
-          <section
-            key={page.id}
-            className="rounded-xl border border-academic-border bg-white p-6 shadow-sm"
-          >
-            <div className="mb-4 flex items-start justify-between gap-4 border-b border-academic-border pb-3">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.2em] text-academic-muted">
-                  {page.sectionTitle}
-                  {page.isContinuation ? ' · Continued' : ''}
-                </p>
-                <h2 className="mt-1 font-serif text-xl font-bold text-academic-text">
-                  {page.sectionTitle}
-                </h2>
-              </div>
-              <span className="shrink-0 rounded-full bg-academic-hover px-2.5 py-1 text-[11px] text-academic-muted">
-                Page {page.pageNumber}
-              </span>
-            </div>
-            <div className="whitespace-pre-wrap font-serif text-[15px] leading-8 text-academic-text/90">
-              {page.content}
-            </div>
-          </section>
-        ))}
-      </div>
-
-      {visiblePageCount < allPages.length ? (
-        <div
-          ref={loadMoreRef}
-          className="py-8 text-center text-xs text-academic-muted"
-        >
-          正在按需渲染后续页面… 还剩 {allPages.length - visiblePageCount} 页
-        </div>
-      ) : allPages.length > 0 ? (
-        <div className="py-6 text-center text-xs text-academic-muted">
-          全文共 {allPages.length} 页，已全部渲染完成。
-        </div>
-      ) : null}
-    </>
-  )
 }
 
 export function ResearchDashboard() {
@@ -797,6 +583,7 @@ function RightWorkspace() {
   const [activePaperId, setActivePaperId] = useState<string | null>(null)
   const [isDownloadingPaper, setIsDownloadingPaper] = useState(false)
   const [paperError, setPaperError] = useState<string | null>(null)
+  const [annotations, setAnnotations] = useState<ReaderAnnotation[]>([])
 
   const activePaper = openPapers.find((paper) => paper.paper_id === activePaperId) ?? null
   const isSearchVisible = showSearch || openPapers.length === 0
@@ -887,6 +674,28 @@ function RightWorkspace() {
     })
     window.dispatchEvent(event)
   }
+
+  const handleCreateAnnotation = (annotation: ReaderAnnotation) => {
+    setAnnotations((previous) => [annotation, ...previous])
+    window.dispatchEvent(new CustomEvent('openNotes'))
+  }
+
+  const handleUpdateAnnotationNote = (annotationId: string, note: string) => {
+    setAnnotations((previous) =>
+      previous.map((annotation) =>
+        annotation.id === annotationId
+          ? {
+              ...annotation,
+              note,
+            }
+          : annotation
+      )
+    )
+  }
+
+  const activeAnnotations = activePaper
+    ? annotations.filter((annotation) => annotation.paperId === activePaper.paper_id)
+    : []
 
   return (
     <section className="flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
@@ -987,10 +796,13 @@ function RightWorkspace() {
       <div className={`flex-1 gap-2 overflow-hidden ${isSearchVisible ? 'hidden' : 'flex'}`}>
           <LaTeXViewer
             paper={activePaper}
-            onDownloadPaper={handleDownloadActivePaper}
-            isDownloading={isDownloadingPaper}
+            annotations={activeAnnotations}
+            onCreateAnnotation={handleCreateAnnotation}
           />
-          <AnnotationPanel />
+          <AnnotationPanel
+            annotations={activeAnnotations}
+            onUpdateAnnotationNote={handleUpdateAnnotationNote}
+          />
       </div>
     </section>
   )
@@ -1155,7 +967,7 @@ function LiteratureSearch({
                 placeholder="Search by title, author, keywords..."
                 className="w-full bg-academic-bg border border-academic-border rounded-md py-2 pl-4 pr-10 text-sm focus:outline-none focus:border-academic-accent transition-colors"
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => setSearchQuery(event.currentTarget.value)}
                 onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
                   if (event.key === 'Enter') {
                     void handleSearch()
@@ -1176,7 +988,7 @@ function LiteratureSearch({
             <select
               className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
               value={selectedYear}
-              onChange={(event) => setSelectedYear(event.target.value)}
+              onChange={(event) => setSelectedYear(event.currentTarget.value)}
             >
               <option value="">All Years</option>
               <option value="2026">2026</option>
@@ -1189,7 +1001,7 @@ function LiteratureSearch({
             <select
               className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
               value={selectedSource}
-              onChange={(event) => setSelectedSource(event.target.value)}
+              onChange={(event) => setSelectedSource(event.currentTarget.value)}
             >
               <option value="">All Sources</option>
               <option value="arXiv">arXiv</option>
@@ -1197,7 +1009,7 @@ function LiteratureSearch({
             <select
               className="px-3 py-1 text-xs border border-academic-border rounded bg-white text-academic-text focus:outline-none focus:border-academic-accent"
               value={pageSize}
-              onChange={(event) => setPageSize(Number(event.target.value))}
+              onChange={(event) => setPageSize(Number(event.currentTarget.value))}
             >
               <option value={10}>10 / page</option>
               <option value={20}>20 / page</option>
@@ -1454,12 +1266,12 @@ function LiteratureSearch({
 
 function LaTeXViewer({
   paper,
-  onDownloadPaper,
-  isDownloading,
+  annotations,
+  onCreateAnnotation,
 }: {
   paper: LiteratureDetail | null
-  onDownloadPaper: () => void
-  isDownloading: boolean
+  annotations: ReaderAnnotation[]
+  onCreateAnnotation: (annotation: ReaderAnnotation) => void
 }) {
   if (!paper) {
     return (
@@ -1472,104 +1284,333 @@ function LaTeXViewer({
     )
   }
 
+  const contentMaxWidthPx = paper.pdf_view_url ? 1380 : 768
+  const contentWidthClass = paper.pdf_view_url ? 'max-w-[1380px]' : 'max-w-3xl'
+  const viewerScrollControlRight = `clamp(12px, calc((100% - ${contentMaxWidthPx}px) / 2 - 16px), 72px)`
+  const scrollContainerRef = useRef<HTMLElement | null>(null)
+  const scrollTrackRef = useRef<HTMLDivElement | null>(null)
+  const scrollControlHideTimeoutRef = useRef<number | null>(null)
+  const [scrollProgress, setScrollProgress] = useState(0)
+  const [canScroll, setCanScroll] = useState(false)
+  const [isDraggingScroll, setIsDraggingScroll] = useState(false)
+  const [isScrollControlVisible, setIsScrollControlVisible] = useState(false)
+  const [isScrollControlHovered, setIsScrollControlHovered] = useState(false)
+  const [lastScrollActivityAt, setLastScrollActivityAt] = useState(0)
+
+  const pingScrollControl = () => {
+    setIsScrollControlVisible(true)
+    setLastScrollActivityAt(Date.now())
+  }
+
+  useEffect(() => {
+    const node = scrollContainerRef.current
+    if (!node) {
+      return
+    }
+
+    const updateScrollState = () => {
+      const maxScrollTop = Math.max(node.scrollHeight - node.clientHeight, 0)
+      setCanScroll(maxScrollTop > 0)
+      setScrollProgress(maxScrollTop > 0 ? (node.scrollTop / maxScrollTop) * 100 : 0)
+      if (maxScrollTop > 0) {
+        pingScrollControl()
+      } else {
+        setIsScrollControlVisible(false)
+      }
+    }
+
+    updateScrollState()
+    const resizeObserver = new ResizeObserver(() => updateScrollState())
+    resizeObserver.observe(node)
+    node.addEventListener('scroll', updateScrollState, { passive: true })
+    window.addEventListener('resize', updateScrollState)
+
+    return () => {
+      resizeObserver.disconnect()
+      node.removeEventListener('scroll', updateScrollState)
+      window.removeEventListener('resize', updateScrollState)
+    }
+  }, [paper.paper_id, paper.pdf_view_url, paper.original_sections.length])
+
+  useEffect(() => {
+    if (scrollControlHideTimeoutRef.current !== null) {
+      window.clearTimeout(scrollControlHideTimeoutRef.current)
+      scrollControlHideTimeoutRef.current = null
+    }
+
+    if (!canScroll) {
+      setIsScrollControlVisible(false)
+      return
+    }
+
+    if (isDraggingScroll || isScrollControlHovered) {
+      setIsScrollControlVisible(true)
+      return
+    }
+
+    if (lastScrollActivityAt === 0) {
+      return
+    }
+
+    scrollControlHideTimeoutRef.current = window.setTimeout(() => {
+      setIsScrollControlVisible(false)
+    }, 1200)
+
+    return () => {
+      if (scrollControlHideTimeoutRef.current !== null) {
+        window.clearTimeout(scrollControlHideTimeoutRef.current)
+        scrollControlHideTimeoutRef.current = null
+      }
+    }
+  }, [canScroll, isDraggingScroll, isScrollControlHovered, lastScrollActivityAt])
+
+  const scrollToTop = () => {
+    const node = scrollContainerRef.current
+    if (!node) {
+      return
+    }
+
+    pingScrollControl()
+    node.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const scrollToBottom = () => {
+    const node = scrollContainerRef.current
+    if (!node) {
+      return
+    }
+
+    pingScrollControl()
+    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
+  }
+
+  const handleScrollSliderChange = (value: number) => {
+    const node = scrollContainerRef.current
+    if (!node) {
+      return
+    }
+
+    pingScrollControl()
+    const maxScrollTop = Math.max(node.scrollHeight - node.clientHeight, 0)
+    node.scrollTo({
+      top: (value / 100) * maxScrollTop,
+      behavior: 'auto',
+    })
+  }
+
+  const updateScrollFromPointer = (clientY: number) => {
+    const track = scrollTrackRef.current
+    if (!track) {
+      return
+    }
+
+    const rect = track.getBoundingClientRect()
+    const relative = ((clientY - rect.top) / rect.height) * 100
+    handleScrollSliderChange(Math.min(Math.max(relative, 0), 100))
+  }
+
+  useEffect(() => {
+    if (!isDraggingScroll) {
+      return
+    }
+
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      updateScrollFromPointer(event.clientY)
+    }
+
+    const handleMouseUp = () => {
+      setIsDraggingScroll(false)
+      setLastScrollActivityAt(Date.now())
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDraggingScroll])
+
   return (
-    <article className="flex-[2] bg-white shadow-soft border-2 border-academic-border overflow-y-auto p-8 pt-5">
-      <div className="max-w-3xl mx-auto">
-        <header className="text-center mb-10 border-b border-academic-border pb-8">
-          <p className="text-xs uppercase tracking-[0.25em] text-academic-muted mb-4">
-            {paper.source} {paper.year ? `• ${paper.year}` : ''}
-          </p>
-          <h1 className="font-serif text-3xl font-bold leading-tight mb-6">{paper.title}</h1>
-
-          <div className="flex flex-wrap justify-center gap-3 text-sm font-serif text-academic-text/90">
-            {paper.authors.length > 0 ? (
-              paper.authors.map((author, index) => (
-                <span key={`${author}-${index}`} className="px-3 py-1 rounded-full bg-academic-hover border border-academic-border">
-                  {author}
-                </span>
-              ))
-            ) : (
-              <span className="text-academic-muted">Unknown authors</span>
-            )}
-          </div>
-
-          {paper.tags.length > 0 && (
-            <div className="mt-5 flex flex-wrap justify-center gap-2">
-              {paper.tags.map((tag) => (
-                <span key={tag} className="px-2.5 py-1 rounded-full bg-red-50 text-academic-accent text-xs border border-red-100">
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
+    <div className="relative flex-[2] min-w-0">
+      {canScroll ? (
+        <div
+          className="pointer-events-none absolute top-1/2 z-20 -translate-y-1/2"
+          style={{ right: viewerScrollControlRight }}
+        >
+          <div
+            className={`flex flex-col items-center gap-2 rounded-full border border-academic-border bg-white/95 px-2 py-2 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur-sm transition-opacity duration-200 ${
+              isScrollControlVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+            onMouseEnter={() => {
+              setIsScrollControlHovered(true)
+              setIsScrollControlVisible(true)
+            }}
+            onMouseLeave={() => {
+              setIsScrollControlHovered(false)
+              setLastScrollActivityAt(Date.now())
+            }}
+          >
             <button
-              onClick={onDownloadPaper}
-              disabled={isDownloading}
-              className="px-4 py-2 rounded-md bg-academic-accent text-white text-sm hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              type="button"
+              onClick={scrollToTop}
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-academic-border bg-white text-academic-text transition-colors hover:bg-academic-hover"
+              title="回到顶部"
             >
-              {isDownloading
-                ? 'Downloading...'
-                : paper.is_downloaded
-                  ? 'Get Local LaTeX'
-                  : 'Download LaTeX'}
+              <i className="fa-solid fa-arrow-up text-[11px]"></i>
             </button>
 
-            {paper.url && (
-              <a
-                href={paper.url}
-                target="_blank"
-                rel="noreferrer"
-                className="px-4 py-2 rounded-md bg-academic-hover border border-academic-border text-sm text-academic-text hover:bg-academic-border transition-colors"
-              >
-                Open Source Page
-              </a>
-            )}
+            <div
+              ref={scrollTrackRef}
+              className="viewer-scroll-track"
+              onMouseDown={(event) => {
+                event.preventDefault()
+                setIsDraggingScroll(true)
+                setIsScrollControlVisible(true)
+                updateScrollFromPointer(event.clientY)
+              }}
+              role="slider"
+              aria-label="Scroll preview"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(scrollProgress)}
+              tabIndex={0}
+              onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  handleScrollSliderChange(scrollProgress - 5)
+                } else if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  handleScrollSliderChange(scrollProgress + 5)
+                } else if (event.key === 'Home') {
+                  event.preventDefault()
+                  scrollToTop()
+                } else if (event.key === 'End') {
+                  event.preventDefault()
+                  scrollToBottom()
+                }
+              }}
+            >
+              <div className="viewer-scroll-track__rail"></div>
+              <div
+                className="viewer-scroll-track__thumb"
+                style={{ top: `${scrollProgress}%` }}
+              ></div>
+            </div>
 
-            {paper.local_source_url && (
-              <a
-                href={paper.local_source_url}
-                target="_blank"
-                rel="noreferrer"
-                className="px-4 py-2 rounded-md bg-white border border-academic-border text-sm text-academic-text hover:bg-academic-hover transition-colors"
-              >
-                Local LaTeX
-              </a>
-            )}
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-academic-border bg-white text-academic-text transition-colors hover:bg-academic-hover"
+              title="回到底部"
+            >
+              <i className="fa-solid fa-arrow-down text-[11px]"></i>
+            </button>
           </div>
-        </header>
+        </div>
+      ) : null}
 
-        <section className="mb-8 rounded-lg border border-academic-border bg-academic-hover px-4 py-3 text-xs text-academic-muted">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>
-              {paper.content_source === 'local_latex'
-                ? '当前显示本地缓存的 LaTeX 原文。'
-                : paper.content_source === 'arxiv_latex'
-                  ? '当前显示从 arXiv LaTeX 解析出的原文。'
-                  : 'LaTeX 原文暂不可用，当前回退为摘要内容。'}
-            </span>
-            <span className="font-mono text-[11px] text-academic-text">{paper.paper_id}</span>
-          </div>
+      <article
+        ref={scrollContainerRef}
+        className="relative h-full overflow-y-auto bg-white p-6 pt-4 shadow-soft border-2 border-academic-border"
+      >
+        <div className={`${contentWidthClass} mx-auto`}>
+          <header className="mb-6 border-b border-academic-border pb-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px] uppercase tracking-[0.22em] text-academic-muted">
+                  <span>{paper.source} {paper.year ? `• ${paper.year}` : ''}</span>
+                  <span className="font-mono text-[10px] normal-case tracking-normal text-academic-text/70">{paper.paper_id}</span>
+                </div>
+
+                <h1 className="mt-2 font-serif text-[2rem] font-bold leading-tight text-academic-text lg:text-[2.2rem]">
+                  {paper.title}
+                </h1>
+
+                <div className="mt-3 text-sm leading-6 text-academic-text/80">
+                  {paper.authors.length > 0 ? paper.authors.join(', ') : 'Unknown authors'}
+                </div>
+
+                {paper.tags.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {paper.tags.map((tag) => (
+                      <span key={tag} className="rounded-full border border-red-100 bg-red-50 px-2.5 py-1 text-[11px] text-academic-accent">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+                {paper.url && (
+                  <a
+                    href={paper.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover border border-academic-border text-academic-text hover:bg-academic-border transition-colors"
+                    title="Open Source Page"
+                    aria-label="Open Source Page"
+                  >
+                    <i className="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+                  </a>
+                )}
+              </div>
+            </div>
+          </header>
+
           {paper.content_error && (
-            <p className="mt-2 text-red-600">{paper.content_error}</p>
+            <section className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-600">
+              {paper.content_error}
+            </section>
           )}
-        </section>
 
-        {paper.original_sections.length > 0 ? (
-          <LazyPaperPages paper={paper} />
-        ) : (
-          <section className="text-center text-academic-muted py-12">
-            <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
-            <p className="text-sm">No readable LaTeX content is available for this paper yet.</p>
-          </section>
-        )}
-      </div>
-    </article>
+          {paper.pdf_view_url ? (
+            <>
+              {/* Example replacement:
+                  old: render parsed sections directly
+                  new: PdfPaperViewer renders pages from a locally typeset preview with lazy mounting,
+                  keeping figures/tables and pagination close to the compiled paper layout. */}
+              <PdfPaperViewer
+                paperId={paper.paper_id}
+                pdfUrl={paper.pdf_view_url}
+                paperTitle={paper.title}
+                annotations={annotations}
+                onCreateAnnotation={onCreateAnnotation}
+                fallback={
+                  paper.original_sections.length > 0 ? (
+                    <PreactDocumentRenderer paper={paper} enablePerfLog={false} />
+                  ) : (
+                    <section className="text-center text-academic-muted py-12">
+                      <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
+                      <p className="text-sm">No readable LaTeX content is available for this paper yet.</p>
+                    </section>
+                  )
+                }
+              />
+            </>
+          ) : paper.original_sections.length > 0 ? (
+            <PreactDocumentRenderer paper={paper} enablePerfLog={false} />
+          ) : (
+            <section className="text-center text-academic-muted py-12">
+              <i className="fa-regular fa-file-lines text-4xl mb-3 opacity-30"></i>
+              <p className="text-sm">No readable LaTeX content is available for this paper yet.</p>
+            </section>
+          )}
+        </div>
+      </article>
+    </div>
   )
 }
 
-function AnnotationPanel() {
+function AnnotationPanel({
+  annotations,
+  onUpdateAnnotationNote,
+}: {
+  annotations: ReaderAnnotation[]
+  onUpdateAnnotationNote: (annotationId: string, note: string) => void
+}) {
   const [isCollapsed, setIsCollapsed] = useState(true)
   const [activeTab, setActiveTab] = useState<'deepRead' | 'jumpResult' | 'notes'>('notes')
 
@@ -1590,10 +1631,17 @@ function AnnotationPanel() {
       handleNotesClick()
     }
 
+    const handleOpenNotes = () => {
+      setIsCollapsed(false)
+      setActiveTab('notes')
+    }
+
     window.addEventListener('toggleNotes', handleToggleNotes)
+    window.addEventListener('openNotes', handleOpenNotes)
 
     return () => {
       window.removeEventListener('toggleNotes', handleToggleNotes)
+      window.removeEventListener('openNotes', handleOpenNotes)
     }
   }, [isCollapsed, activeTab])
 
@@ -1609,28 +1657,34 @@ function AnnotationPanel() {
             <div className="flex-1 p-3 overflow-y-auto flex flex-col gap-2">
               {activeTab === 'notes' && (
                 <>
-                  <div className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
-                    <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
-                      <span>Section 1. Introduction</span>
-                      <span>10:42 AM</span>
-                    </div>
-                    <blockquote className="text-xs font-serif italic border-l-2 border-academic-accent pl-2 text-academic-text/80 mb-3">
-                      "The self-attention mechanism allows the model to capture long-range dependencies..."
-                    </blockquote>
-                    <textarea
-                      className="w-full bg-white border border-academic-border rounded-md p-2 text-sm resize-none focus:outline-none focus:border-academic-accent transition-colors"
-                      rows={3}
-                      placeholder="Add your thoughts here..."
-                      defaultValue="Crucial point for my methodology comparison section. Need to contrast this with CNN receptive fields."
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <button className="text-xs font-medium text-academic-accent hover:text-red-700">Save Note</button>
-                    </div>
-                  </div>
+                  {annotations.length > 0 ? (
+                    annotations.map((annotation) => (
+                      <div key={annotation.id} className="bg-academic-hover rounded-lg p-3 border border-transparent hover:border-academic-border transition-colors">
+                        <div className="text-xs text-academic-muted mb-2 flex justify-between items-center">
+                          <span>Page {annotation.pageNumber}</span>
+                          <span>{new Date(annotation.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        <blockquote className="text-xs font-serif italic border-l-2 border-academic-accent pl-2 text-academic-text/80 mb-3">
+                          "{annotation.quote}"
+                        </blockquote>
+                        <textarea
+                          className="w-full bg-white border border-academic-border rounded-md p-2 text-sm resize-none focus:outline-none focus:border-academic-accent transition-colors"
+                          rows={3}
+                          placeholder="Add your thoughts here..."
+                          value={annotation.note}
+                          onChange={(event) => onUpdateAnnotationNote(annotation.id, event.currentTarget.value)}
+                        />
+                      </div>
+                    ))
+                  ) : null}
 
-                  <div className="border-2 border-dashed border-academic-border rounded-lg p-6 text-center text-academic-muted hover:bg-academic-hover hover:border-academic-muted transition-all cursor-pointer">
-                    <i className="fa-solid fa-plus mb-2"></i>
-                    <p className="text-xs">Select text in the viewer to add a new annotation</p>
+                  <div className="border-2 border-dashed border-academic-border rounded-lg p-6 text-center text-academic-muted hover:bg-academic-hover hover:border-academic-muted transition-all">
+                    <i className="fa-solid fa-highlighter mb-2"></i>
+                    <p className="text-xs">
+                      {annotations.length > 0
+                        ? 'Select more text in the viewer and click 标记 to add another note anchor.'
+                        : 'Select text in the viewer and click 标记 to create your first annotation.'}
+                    </p>
                   </div>
                 </>
               )}

@@ -17,11 +17,14 @@ class LiteratureLibrary:
         self,
         db_path: Optional[str] = None,
         download_dir: Optional[str] = None,
+        preview_dir: Optional[str] = None,
     ) -> None:
         self.db_path = db_path or config.db_path
         self.download_dir = Path(download_dir or Path(config.data_dir) / "papers")
+        self.preview_dir = Path(preview_dir or Path(config.data_dir) / "paper_previews")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.preview_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -72,6 +75,10 @@ class LiteratureLibrary:
     def resolve_download_path(self, paper_id: str) -> Path:
         safe_name = self.sanitize_filename(paper_id)
         return self.download_dir / f"{safe_name}.tar.gz"
+
+    def resolve_compiled_pdf_path(self, paper_id: str) -> Path:
+        safe_name = self.sanitize_filename(paper_id)
+        return self.preview_dir / f"{safe_name}.pdf"
 
     def get_paper(self, paper_id: str) -> Optional[Dict[str, Any]]:
         normalized_id = self.normalize_paper_id(paper_id)

@@ -19,6 +19,8 @@ export interface LiteratureItem {
   source: string
   url?: string
   source_url?: string
+  pdf_url?: string
+  pdf_view_url?: string
   tags: string[]
   is_downloaded: boolean
   local_source_url?: string

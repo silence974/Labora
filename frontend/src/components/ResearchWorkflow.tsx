@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState } from 'preact/hooks'
 import ReactMarkdown from 'react-markdown'
 import './ResearchWorkflow.css'
 
@@ -114,7 +114,7 @@ export function ResearchWorkflow() {
           <textarea
             id="question"
             value={question}
-            onChange={(e) => setQuestion(e.target.value)}
+            onChange={(e) => setQuestion(e.currentTarget.value)}
             placeholder="例如：What are the recent advances in transformer architectures?"
             rows={4}
           />

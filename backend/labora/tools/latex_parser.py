@@ -7,10 +7,178 @@ import urllib.request
 from langchain_core.tools import tool
 
 
+TABLE_ENV_PATTERN = re.compile(
+    r"\\begin\{(?P<env>table\*?|wraptable)\}(?P<args>(?:\[[^\]]*\]|\{[^{}]*\})*)(?P<body>.*?)\\end\{(?P=env)\}",
+    re.DOTALL | re.IGNORECASE,
+)
+TABULAR_ENV_PATTERN = re.compile(
+    r"\\begin\{(?P<env>tabular\*?|tabularx|longtable|array)\}(?P<args>(?:\[[^\]]*\]|\{[^{}]*\})*)(?P<body>.*?)\\end\{(?P=env)\}",
+    re.DOTALL | re.IGNORECASE,
+)
+FIGURE_ENV_PATTERN = re.compile(
+    r"\\begin\{(?P<env>figure\*?|wrapfigure)\}(?P<args>(?:\[[^\]]*\]|\{[^{}]*\})*)(?P<body>.*?)\\end\{(?P=env)\}",
+    re.DOTALL | re.IGNORECASE,
+)
+CAPTION_PATTERN = re.compile(
+    r"\\caption(?:\[[^\]]*\])?\{(?P<caption>.*?)\}",
+    re.DOTALL | re.IGNORECASE,
+)
+INCLUDE_GRAPHICS_PATTERN = re.compile(
+    r"\\includegraphics(?:\[[^\]]*\])?\{(?P<path>[^}]*)\}",
+    re.IGNORECASE,
+)
+TABLE_LINE_BREAK = "__LABORA_TABLE_LINE_BREAK__"
+
+
+def _clean_latex_inline(text: str) -> str:
+    escaped_amp = "__LABORA_ESCAPED_AMP__"
+    escaped_percent = "__LABORA_ESCAPED_PERCENT__"
+    escaped_hash = "__LABORA_ESCAPED_HASH__"
+    escaped_underscore = "__LABORA_ESCAPED_UNDERSCORE__"
+
+    text = text.replace(r"\&", escaped_amp)
+    text = text.replace(r"\%", escaped_percent)
+    text = text.replace(r"\#", escaped_hash)
+    text = text.replace(r"\_", escaped_underscore)
+
+    text = re.sub(r"\\cite\{[^}]*\}", "", text)
+    text = re.sub(r"\\ref\{[^}]*\}", "", text)
+    text = re.sub(r"\\label\{[^}]*\}", "", text)
+    text = re.sub(r"\\begin\{equation\}.*?\\end\{equation\}", "[EQUATION]", text, flags=re.DOTALL)
+    text = re.sub(r"\\begin\{align\*?\}.*?\\end\{align\*?\}", "[EQUATION]", text, flags=re.DOTALL)
+    text = re.sub(r"\$\$.*?\$\$", "[EQUATION]", text, flags=re.DOTALL)
+    text = re.sub(r"\$.*?\$", "[MATH]", text)
+    text = re.sub(r"\\multicolumn\{[^}]*\}\{[^}]*\}\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\multirow\{[^}]*\}\{[^}]*\}\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\(?:textbf|textit|emph|underline|mathrm|mathbf|operatorname)\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?", "", text)
+    text = re.sub(r"[{}]", "", text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", " ", text)
+    text = re.sub(r"\s+", " ", text)
+
+    text = text.replace(escaped_amp, "&")
+    text = text.replace(escaped_percent, "%")
+    text = text.replace(escaped_hash, "#")
+    text = text.replace(escaped_underscore, "_")
+    return text.strip()
+
+
+def _normalize_markdown_table_rows(rows: list[list[str]]) -> Optional[str]:
+    normalized_rows = [
+        [cell.strip() for cell in row]
+        for row in rows
+        if any(cell.strip() for cell in row)
+    ]
+    if len(normalized_rows) < 2:
+        return None
+
+    column_count = max(len(row) for row in normalized_rows)
+    padded_rows = [
+        row + [""] * (column_count - len(row))
+        for row in normalized_rows
+    ]
+    header = padded_rows[0]
+    divider = ["---"] * column_count
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(divider) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in padded_rows[1:])
+    return TABLE_LINE_BREAK.join(lines)
+
+
+def _convert_tabular_to_markdown(tabular_content: str) -> Optional[str]:
+    escaped_amp = "__LABORA_ESCAPED_AMP__"
+    body = tabular_content.replace(r"\&", escaped_amp)
+    body = re.sub(r"\\(?:toprule|midrule|bottomrule|hline)\b", "", body)
+    body = re.sub(r"\\(?:cline|cmidrule|specialrule)\*?(?:\[[^\]]*\])?\{[^}]*\}", "", body)
+    body = re.sub(r"\\addlinespace(?:\[[^\]]*\])?", "", body)
+    body = re.sub(r"\\(?:small|footnotesize|scriptsize|tiny|normalsize|centering)\b", "", body)
+    body = re.sub(r"\\multicolumn\{[^}]*\}\{[^}]*\}\{([^}]*)\}", r"\1", body)
+    body = re.sub(r"\\multirow\{[^}]*\}\{[^}]*\}\{([^}]*)\}", r"\1", body)
+
+    rows: list[list[str]] = []
+    for raw_row in re.split(r"(?<!\\)\\\\(?:\[[^\]]*\])?", body):
+        stripped_row = raw_row.strip()
+        if not stripped_row:
+            continue
+
+        cells = [
+            _clean_latex_inline(cell.replace(escaped_amp, r"\&"))
+            for cell in re.split(r"(?<!\\)&", stripped_row)
+        ]
+        if any(cell for cell in cells):
+            rows.append(cells)
+
+    return _normalize_markdown_table_rows(rows)
+
+
+def _extract_caption(block: str) -> Optional[str]:
+    match = CAPTION_PATTERN.search(block)
+    if not match:
+        return None
+
+    caption = _clean_latex_inline(match.group("caption"))
+    return caption or None
+
+
+def _replace_table_environments(text: str) -> str:
+    def replace_table(match: re.Match[str]) -> str:
+        body = match.group("body")
+        caption = _extract_caption(body)
+        tables: list[str] = []
+
+        def collect_tabular(tabular_match: re.Match[str]) -> str:
+            markdown = _convert_tabular_to_markdown(tabular_match.group("body"))
+            if markdown:
+                tables.append(markdown)
+            return "\n"
+
+        TABULAR_ENV_PATTERN.sub(collect_tabular, body)
+
+        parts: list[str] = []
+        if caption:
+            parts.append(f"Table: {caption}")
+        parts.extend(tables)
+        return "\n\n" + "\n\n".join(parts) + "\n\n" if parts else "\n\n"
+
+    text = TABLE_ENV_PATTERN.sub(replace_table, text)
+
+    def replace_bare_tabular(match: re.Match[str]) -> str:
+        markdown = _convert_tabular_to_markdown(match.group("body"))
+        if not markdown:
+            return "\n"
+        return "\n\n" + markdown + "\n\n"
+
+    return TABULAR_ENV_PATTERN.sub(replace_bare_tabular, text)
+
+
+def _replace_figure_environments(text: str) -> str:
+    def replace_figure(match: re.Match[str]) -> str:
+        body = match.group("body")
+        caption = _extract_caption(body)
+        image_match = INCLUDE_GRAPHICS_PATTERN.search(body)
+        image_path = image_match.group("path").strip() if image_match else None
+
+        if caption and image_path:
+            return f"\n\n![{caption}]({image_path})\n\n"
+        if caption:
+            return f"\n\n[FIGURE] {caption}\n\n"
+        if image_path:
+            return f"\n\n![Embedded figure]({image_path})\n\n"
+        return "\n\n"
+
+    return FIGURE_ENV_PATTERN.sub(replace_figure, text)
+
+
 def _clean_latex(text: str) -> str:
     """清理 LaTeX 命令，提取纯文本"""
     paragraph_break = "__LABORA_PARAGRAPH_BREAK__"
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _replace_table_environments(text)
+    text = _replace_figure_environments(text)
     text = re.sub(r"\n\s*\n+", paragraph_break, text)
 
     # 移除常见的 LaTeX 命令
@@ -18,7 +186,7 @@ def _clean_latex(text: str) -> str:
     text = re.sub(r"\\ref\{[^}]*\}", "", text)  # 引用
     text = re.sub(r"\\label\{[^}]*\}", "", text)  # 标签
     text = re.sub(r"\\begin\{equation\}.*?\\end\{equation\}", "[EQUATION]", text, flags=re.DOTALL)
-    text = re.sub(r"\\begin\{align\}.*?\\end\{align\}", "[EQUATION]", text, flags=re.DOTALL)
+    text = re.sub(r"\\begin\{align\*?\}.*?\\end\{align\*?\}", "[EQUATION]", text, flags=re.DOTALL)
     text = re.sub(r"\$\$.*?\$\$", "[EQUATION]", text, flags=re.DOTALL)
     text = re.sub(r"\$.*?\$", "[MATH]", text)
     text = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", text)  # 简单命令
@@ -27,6 +195,7 @@ def _clean_latex(text: str) -> str:
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r" *\n *", " ", text)
     text = re.sub(r"\s+", " ", text)
+    text = text.replace(TABLE_LINE_BREAK, "\n")
     text = text.replace(paragraph_break, "\n\n")
     text = re.sub(r"(?:\n\s*){3,}", "\n\n", text)
 

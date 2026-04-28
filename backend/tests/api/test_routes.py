@@ -32,6 +32,7 @@ def temp_literature_library(tmp_path, monkeypatch):
     library = LiteratureLibrary(
         db_path=str(tmp_path / "literature.db"),
         download_dir=str(tmp_path / "papers"),
+        preview_dir=str(tmp_path / "paper_previews"),
     )
     monkeypatch.setattr("labora.api.routes.literature.library", library)
     return library
@@ -201,8 +202,13 @@ class TestResearchAPI:
 
 
 class FakeDownloadResponse:
-    def __init__(self, content: bytes = b"%PDF-1.4 test"):
+    def __init__(
+        self,
+        content: bytes = b"%PDF-1.4 test",
+        headers: dict[str, str] | None = None,
+    ):
         self.content = content
+        self.headers = headers or {"content-type": "application/pdf"}
 
     def raise_for_status(self):
         return None
@@ -218,7 +224,7 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def get(self, url):
+    async def get(self, url, *args, **kwargs):
         return FakeDownloadResponse()
 
 
@@ -268,6 +274,7 @@ class TestLiteratureAPI:
         assert data["has_next"] is True
         assert data["results"][0]["paper_id"] == "1706.03762"
         assert data["results"][0]["is_downloaded"] is False
+        assert data["results"][0]["pdf_view_url"].endswith("/api/literature/pdf/1706.03762")
 
     @patch("labora.api.routes.literature._search_arxiv_paginated")
     def test_search_literature_online_rate_limited_falls_back_to_local(
@@ -384,6 +391,7 @@ class TestLiteratureAPI:
         assert detail["title"] == "Attention Is All You Need"
         assert detail["original_sections"][0]["title"] == "Introduction"
         assert detail["content_source"] == "arxiv_latex"
+        assert detail["pdf_view_url"].endswith("/api/literature/pdf/1706.03762")
 
         recent_response = client.get("/api/literature/recent")
         assert recent_response.status_code == 200
@@ -432,6 +440,39 @@ class TestLiteratureAPI:
 
         stored_file = temp_literature_library.resolve_download_path("1706.03762")
         assert stored_file.exists()
+
+    def test_get_literature_pdf_proxy(self, client, temp_literature_library, monkeypatch):
+        """测试页面内排版预览端点会编译本地 LaTeX 源码"""
+        source_archive = temp_literature_library.resolve_download_path("1706.03762")
+        source_archive.write_text("\\documentclass{article}\\begin{document}Test\\end{document}", encoding="utf-8")
+
+        temp_literature_library.upsert_paper(
+            {
+                "id": "arxiv:1706.03762",
+                "paper_id": "1706.03762",
+                "arxiv_id": "1706.03762",
+                "title": "Attention Is All You Need",
+                "local_path": str(source_archive),
+            }
+        )
+
+        def fake_compile_latex_archive_to_pdf(archive_path, output_pdf_path):
+            assert str(archive_path).endswith("1706.03762.tar.gz")
+            output_path = temp_literature_library.resolve_compiled_pdf_path("1706.03762")
+            output_path.write_bytes(b"%PDF-1.4 compiled preview")
+            return output_path
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature.compile_latex_archive_to_pdf",
+            fake_compile_latex_archive_to_pdf,
+        )
+
+        response = client.get("/api/literature/pdf/1706.03762")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.headers["content-disposition"].startswith("inline;")
+        assert response.content.startswith(b"%PDF-1.4")
 
     @patch("labora.api.routes.literature.arxiv_get_paper")
     def test_download_literature(

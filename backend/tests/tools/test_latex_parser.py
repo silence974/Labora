@@ -206,3 +206,40 @@ Appendix text.
         ]
         assert sections["related_work"] == "Related work text."
         assert sections["training_details"] == "Training details text."
+
+    def test_clean_latex_keeps_tabular_as_markdown_table(self):
+        """测试 tabular 环境会被转换成前端可渲染的 Markdown 表格"""
+        latex_content = r"""
+\section{Results}
+Before the table.
+
+\begin{table}[h]
+\caption{Main benchmark results}
+\begin{tabular}{lcc}
+Model & Accuracy & PPL \\
+FBI-LLM & 68.1 & 26.9 \\
+OPT & 57.8 & 30.5 \\
+\end{tabular}
+\end{table}
+"""
+        sections = _parse_sections(latex_content)
+
+        assert "results" in sections
+        assert "Table: Main benchmark results" in sections["results"]
+        assert "| Model | Accuracy | PPL |" in sections["results"]
+        assert "| FBI-LLM | 68.1 | 26.9 |" in sections["results"]
+
+    def test_clean_latex_keeps_figure_caption_readable(self):
+        """测试 figure 环境不会以原始 LaTeX 垃圾文本泄露到正文里"""
+        latex_content = r"""
+\section{Results}
+\begin{wrapfigure}{r}{0.4\textwidth}
+\includegraphics[width=0.4\textwidth]{figs/plot.pdf}
+\caption{Scaling trend during training}
+\end{wrapfigure}
+"""
+        sections = _parse_sections(latex_content)
+
+        assert "results" in sections
+        assert "![Scaling trend during training](figs/plot.pdf)" in sections["results"]
+        assert "wrapfigure" not in sections["results"]

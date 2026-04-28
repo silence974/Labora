@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState } from 'preact/hooks'
 import ReactMarkdown from 'react-markdown'
 import './PaperReader.css'
 
@@ -99,7 +99,7 @@ export function PaperReader() {
             id="paper-id"
             type="text"
             value={paperId}
-            onChange={(e) => setPaperId(e.target.value)}
+            onChange={(e) => setPaperId(e.currentTarget.value)}
             placeholder="例如：arxiv:1706.03762 或 1706.03762"
             disabled={loading}
           />

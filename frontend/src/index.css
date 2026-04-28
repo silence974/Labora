@@ -70,3 +70,73 @@ body {
 .animate-shimmer {
   animation: shimmer 2s infinite;
 }
+
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  user-select: text;
+  cursor: text;
+}
+
+.pdf-text-layer__text {
+  position: absolute;
+  transform-origin: 0 0;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  white-space: pre;
+  line-height: 1;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+}
+
+.pdf-text-layer__text::selection {
+  background: rgba(250, 204, 21, 0.26);
+  color: transparent;
+}
+
+.pdf-page-highlight {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+  background: rgba(250, 204, 21, 0.20);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.12);
+}
+
+.viewer-scroll-track {
+  position: relative;
+  width: 12px;
+  height: 128px;
+  cursor: pointer;
+}
+
+.viewer-scroll-track:focus {
+  outline: none;
+}
+
+.viewer-scroll-track__rail {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  transform: translateX(-50%);
+}
+
+.viewer-scroll-track__thumb {
+  position: absolute;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: #d32f2f;
+  box-shadow: 0 2px 8px rgba(211, 47, 47, 0.28);
+  transform: translate(-50%, -50%);
+}
+
+.viewer-scroll-track:focus .viewer-scroll-track__thumb,
+.viewer-scroll-track:hover .viewer-scroll-track__thumb {
+  box-shadow: 0 0 0 4px rgba(211, 47, 47, 0.12);
+}

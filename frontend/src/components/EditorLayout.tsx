@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState } from 'preact/hooks'
 import './EditorLayout.css'
 
 export function EditorLayout() {
@@ -69,7 +69,7 @@ Where w represents the convolutional kernel weights and x represents the input f
           <textarea
             className="editor-textarea"
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => setContent(e.currentTarget.value)}
             placeholder="Start writing..."
           />
         </div>

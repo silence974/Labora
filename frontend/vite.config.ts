@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import preact from '@preact/preset-vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  // Optimization: switch the runtime to Preact for a smaller virtual-DOM layer.
+  plugins: [preact()],
 })
