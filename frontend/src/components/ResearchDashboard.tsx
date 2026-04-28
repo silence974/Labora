@@ -68,59 +68,61 @@ export function ResearchDashboard() {
 
         <div className="flex-1 min-w-0 flex overflow-hidden">
           {/* Leftmost Sidebar */}
-          <aside className="w-12 bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shrink-0 z-20 shadow-sm transition-all hover:w-40 group">
-            <div className="mb-6 w-full px-2">
-              <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
-                <i className="fa-solid fa-file-circle-plus"></i>
-                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
-              </button>
-            </div>
-
-            <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
-              <div
-                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                  activeLeftDoc === 'methodology'
-                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                }`}
-                onClick={() => setActiveLeftDoc('methodology')}
-              >
-                <i className="fa-solid fa-file-lines"></i>
-                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
+          <div className="relative w-12 shrink-0">
+            <aside className="absolute inset-y-0 left-0 w-12 overflow-hidden bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 z-30 shadow-sm transition-[width,box-shadow] duration-200 ease-out hover:w-40 hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)] group">
+              <div className="mb-6 w-full px-2">
+                <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
+                  <i className="fa-solid fa-file-circle-plus"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
+                </button>
               </div>
 
-              <div
-                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                  activeLeftDoc === 'litReview'
-                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                }`}
-                onClick={() => setActiveLeftDoc('litReview')}
-              >
-                <i className="fa-regular fa-file-pdf"></i>
-                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+              <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
+                <div
+                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                    activeLeftDoc === 'methodology'
+                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                  }`}
+                  onClick={() => setActiveLeftDoc('methodology')}
+                >
+                  <i className="fa-solid fa-file-lines"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
+                </div>
+
+                <div
+                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                    activeLeftDoc === 'litReview'
+                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                  }`}
+                  onClick={() => setActiveLeftDoc('litReview')}
+                >
+                  <i className="fa-regular fa-file-pdf"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+                </div>
+
+                <div
+                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+                    activeLeftDoc === 'dataAnalysis'
+                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
+                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+                  }`}
+                  onClick={() => setActiveLeftDoc('dataAnalysis')}
+                >
+                  <i className="fa-regular fa-file-word"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
+                </div>
               </div>
 
-              <div
-                className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                  activeLeftDoc === 'dataAnalysis'
-                    ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                    : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                }`}
-                onClick={() => setActiveLeftDoc('dataAnalysis')}
-              >
-                <i className="fa-regular fa-file-word"></i>
-                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
+              <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
+                <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
+                  <i className="fa-solid fa-box-archive"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
+                </button>
               </div>
-            </div>
-
-            <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
-              <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors relative group/btn">
-                <i className="fa-solid fa-box-archive"></i>
-                <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">Archive</span>
-              </button>
-            </div>
-          </aside>
+            </aside>
+          </div>
 
           {/* Left Workspace */}
           <LeftWorkspace
@@ -906,17 +908,17 @@ function RightWorkspace() {
         />
       </div>
 
-      <div className={`flex-1 gap-2 overflow-hidden ${isSearchVisible ? 'hidden' : 'flex'}`}>
-          <LaTeXViewer
-            paper={activePaper}
-            annotations={activeAnnotations}
-            onCreateAnnotation={handleCreateAnnotation}
-            onOpenReference={handleOpenReferencePreview}
-          />
-          <AnnotationPanel
-            annotations={activeAnnotations}
-            onUpdateAnnotationNote={handleUpdateAnnotationNote}
-          />
+      <div className={`relative flex-1 overflow-hidden ${isSearchVisible ? 'hidden' : 'block'}`}>
+        <LaTeXViewer
+          paper={activePaper}
+          annotations={activeAnnotations}
+          onCreateAnnotation={handleCreateAnnotation}
+          onOpenReference={handleOpenReferencePreview}
+        />
+        <AnnotationPanel
+          annotations={activeAnnotations}
+          onUpdateAnnotationNote={handleUpdateAnnotationNote}
+        />
       </div>
 
       {isReferencePreviewOpen ? (
@@ -1507,6 +1509,7 @@ function LaTeXViewer({
   const [isScrollControlVisible, setIsScrollControlVisible] = useState(false)
   const [isScrollControlHovered, setIsScrollControlHovered] = useState(false)
   const [lastScrollActivityAt, setLastScrollActivityAt] = useState(0)
+  const [selectionZoomEnabled, setSelectionZoomEnabled] = useState(false)
 
   const pingScrollControl = () => {
     setIsScrollControlVisible(true)
@@ -1643,8 +1646,12 @@ function LaTeXViewer({
     }
   }, [isDraggingScroll])
 
+  useEffect(() => {
+    setSelectionZoomEnabled(false)
+  }, [paper.paper_id, paper.pdf_view_url])
+
   return (
-    <div className="relative flex-[2] min-w-0">
+    <div className="relative h-full min-w-0">
       {canScroll ? (
         <div
           className="pointer-events-none absolute top-1/2 z-20 -translate-y-1/2"
@@ -1663,6 +1670,26 @@ function LaTeXViewer({
               setLastScrollActivityAt(Date.now())
             }}
           >
+            {paper.pdf_view_url ? (
+              <button
+                type="button"
+                onClick={() => {
+                  pingScrollControl()
+                  setSelectionZoomEnabled((current) => !current)
+                }}
+                className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${
+                  selectionZoomEnabled
+                    ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                    : 'border-academic-border bg-white text-academic-text hover:bg-academic-hover'
+                }`}
+                title={selectionZoomEnabled ? '取消框选放大' : '框选放大'}
+                aria-label={selectionZoomEnabled ? '取消框选放大' : '框选放大'}
+                aria-pressed={selectionZoomEnabled}
+              >
+                <i className="fa-solid fa-magnifying-glass-plus text-[11px]"></i>
+              </button>
+            ) : null}
+
             <button
               type="button"
               onClick={scrollToTop}
@@ -1795,6 +1822,8 @@ function LaTeXViewer({
                 annotations={annotations}
                 onCreateAnnotation={onCreateAnnotation}
                 onOpenReference={onOpenReference}
+                selectionZoomEnabled={selectionZoomEnabled}
+                onSelectionZoomChange={setSelectionZoomEnabled}
                 fallback={
                   paper.original_sections.length > 0 ? (
                     <PreactDocumentRenderer
@@ -1872,14 +1901,15 @@ function AnnotationPanel({
 
   return (
     <div
-      className={`relative shrink-0 overflow-hidden transition-[width] duration-300 ease-out ${
-        isCollapsed ? 'w-0' : 'w-80'
+      className={`absolute inset-y-0 right-0 z-20 flex w-80 justify-end transition-opacity duration-200 ${
+        isCollapsed ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
       }`}
     >
       <aside
-        className={`h-full w-80 bg-white shadow-soft border-2 border-academic-border flex flex-col overflow-hidden transition-opacity duration-200 ${
-          isCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        className={`pointer-events-auto h-full w-80 bg-white shadow-[0_20px_40px_rgba(15,23,42,0.12)] border-l-2 border-academic-border flex flex-col overflow-hidden transition-transform duration-300 ease-out ${
+          isCollapsed ? 'translate-x-full' : 'translate-x-0'
         }`}
+        style={{ contain: 'layout paint style', willChange: 'transform' }}
       >
         {!isCollapsed && (
           <div className="flex-1 p-3 overflow-y-auto flex flex-col gap-2">

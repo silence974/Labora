@@ -352,7 +352,31 @@ async def _download_binary(url: str, destination: Path) -> None:
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(response.content)
+
+
+async def _ensure_pdf_preview_fallback(paper: Dict[str, Any]) -> Path:
+    normalized_id = _normalize_paper_id(
+        str(
+            paper.get("paper_id")
+            or paper.get("arxiv_id")
+            or paper.get("id")
+            or ""
+        )
+    )
+    pdf_url = paper.get("pdf_url") or (
+        f"https://arxiv.org/pdf/{normalized_id}.pdf" if normalized_id else None
+    )
+    if not normalized_id or not pdf_url:
+        raise RuntimeError("No upstream PDF URL is available for preview fallback")
+
+    fallback_pdf_path = library.resolve_fallback_pdf_path(normalized_id)
+    if fallback_pdf_path.exists():
+        return fallback_pdf_path
+
+    await _download_binary(pdf_url, fallback_pdf_path)
+    return fallback_pdf_path
 
 
 def _humanize_section_title(key: str) -> str:
@@ -741,24 +765,35 @@ async def get_literature_pdf_view(paper_id: str):
         raise HTTPException(status_code=404, detail="LaTeX source archive not found")
 
     compiled_pdf_path = library.resolve_compiled_pdf_path(normalized_id)
+    preview_pdf_path: Path
+    preview_source: str
 
     try:
-        compiled_pdf = await asyncio.to_thread(
+        preview_pdf_path = await asyncio.to_thread(
             compile_latex_archive_to_pdf,
             source_archive,
             compiled_pdf_path,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to compile LaTeX preview: {exc}",
-        ) from exc
+        preview_source = "compiled_latex_pdf"
+    except Exception as compile_exc:
+        try:
+            preview_pdf_path = await _ensure_pdf_preview_fallback(paper)
+            preview_source = "arxiv_pdf_fallback"
+        except Exception as fallback_exc:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Failed to compile LaTeX preview "
+                    f"({compile_exc}); fallback PDF fetch also failed ({fallback_exc})"
+                ),
+            ) from compile_exc
 
     library.upsert_paper(
         {
             **paper,
-            "compiled_pdf_path": str(compiled_pdf),
-            "preview_source": "compiled_latex_pdf",
+            "compiled_pdf_path": str(preview_pdf_path) if preview_source == "compiled_latex_pdf" else None,
+            "preview_pdf_path": str(preview_pdf_path),
+            "preview_source": preview_source,
         },
         mark_accessed=True,
         mark_downloaded=_has_local_source_file(paper),
@@ -766,7 +801,7 @@ async def get_literature_pdf_view(paper_id: str):
     )
 
     return FileResponse(
-        compiled_pdf,
+        preview_pdf_path,
         media_type="application/pdf",
         filename=f"{normalized_id}.pdf",
         headers={

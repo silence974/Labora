@@ -8,6 +8,8 @@ const DEFAULT_PAGE_RATIO = 1.414
 const PAGE_ROOT_MARGIN = '1400px 0px'
 const VECTOR_RENDER_OVERSCAN = 1.18
 const MAX_VECTOR_RENDER_BOOST = 2.6
+const IMAGE_PREVIEW_RENDER_OVERSCAN = 1.08
+const MAX_IMAGE_PREVIEW_RENDER_BOOST = 5.4
 const RERENDER_THRESHOLD = 1.04
 const TEXT_SELECTION_TOP_INSET_RATIO = 0.14
 const TEXT_SELECTION_HEIGHT_RATIO = 0.76
@@ -59,8 +61,23 @@ interface RenderedPageSnapshot {
   textSpans: PositionedTextSpan[]
   cropBounds: PageCropBounds
   viewport: {
+    width: number
+    height: number
+    transform: number[]
     convertToViewportRectangle(rect: number[]): number[]
   }
+}
+
+interface PdfImageRegion {
+  id: string
+  left: number
+  top: number
+  width: number
+  height: number
+  normalizedLeft: number
+  normalizedTop: number
+  normalizedWidth: number
+  normalizedHeight: number
 }
 
 interface PdfPageLinkOverlay {
@@ -73,6 +90,26 @@ interface PdfPageLinkOverlay {
   paperId?: string
   dest?: unknown
   title: string
+}
+
+interface PagePreviewTransform {
+  cropLeftCss: number
+  cropTopCss: number
+  displayScale: number
+  viewportWidth: number
+  viewportHeight: number
+}
+
+interface PdfPreviewState {
+  region: PdfImageRegion
+  heading: string
+}
+
+interface SelectionDragState {
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
 }
 
 const HORIZONTAL_TEXT_SIN_THRESHOLD = 0.35
@@ -387,6 +424,8 @@ function PdfPageCanvas({
   annotations,
   onCreateAnnotation,
   onOpenReference,
+  selectionZoomEnabled,
+  onSelectionZoomChange,
 }: {
   paperId: string
   pdfDocument: PDFDocumentProxy
@@ -394,6 +433,8 @@ function PdfPageCanvas({
   annotations: ReaderAnnotation[]
   onCreateAnnotation?: (annotation: ReaderAnnotation) => void
   onOpenReference?: (target: LiteratureReferenceTarget) => void
+  selectionZoomEnabled?: boolean
+  onSelectionZoomChange?: (enabled: boolean) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const frameRef = useRef<HTMLDivElement | null>(null)
@@ -409,7 +450,10 @@ function PdfPageCanvas({
   const [pageError, setPageError] = useState<string | null>(null)
   const [textSpans, setTextSpans] = useState<PositionedTextSpan[]>([])
   const [pageLinks, setPageLinks] = useState<PdfPageLinkOverlay[]>([])
+  const [previewState, setPreviewState] = useState<PdfPreviewState | null>(null)
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 })
+  const [previewTransform, setPreviewTransform] = useState<PagePreviewTransform | null>(null)
+  const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null)
   const [pendingSelection, setPendingSelection] = useState<{
     quote: string
     rects: ReaderAnnotationRect[]
@@ -542,17 +586,18 @@ function PdfPageCanvas({
           })
           renderTaskRef.current = task
           await task.promise
+          const renderedPixels = offscreenContext.getImageData(
+            0,
+            0,
+            offscreenCanvas.width,
+            offscreenCanvas.height,
+          ).data
 
           return {
             canvas: offscreenCanvas,
             textSpans: nextTextSpans,
             cropBounds: computeContentAwareCropBounds({
-              pixels: offscreenContext.getImageData(
-                0,
-                0,
-                offscreenCanvas.width,
-                offscreenCanvas.height,
-              ).data,
+              pixels: renderedPixels,
               width: offscreenCanvas.width,
               height: offscreenCanvas.height,
               padding: Math.round(18 * devicePixelRatio),
@@ -713,6 +758,13 @@ function PdfPageCanvas({
 
           setPageRatio(displayHeightCss / displayWidthCss)
           setPageSize({ width: displayWidthCss, height: displayHeightCss })
+          setPreviewTransform({
+            cropLeftCss,
+            cropTopCss,
+            displayScale,
+            viewportWidth: finalSnapshot.viewport.width,
+            viewportHeight: finalSnapshot.viewport.height,
+          })
           setTextSpans(mappedTextSpans)
           setPageLinks(dedupePageLinks([...annotationLinks, ...inferredTextLinks]))
           setHasRendered(true)
@@ -740,6 +792,35 @@ function PdfPageCanvas({
   useEffect(() => {
     setPageLinks([])
   }, [pageNumber, paperId])
+
+  useEffect(() => {
+    setPreviewTransform(null)
+  }, [pageNumber, paperId])
+
+  useEffect(() => {
+    if (!selectionZoomEnabled) {
+      setSelectionDrag(null)
+    }
+  }, [selectionZoomEnabled])
+
+  useEffect(() => {
+    setPreviewState(null)
+  }, [pageNumber, paperId])
+
+  useEffect(() => {
+    if (!previewState) {
+      return
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPreviewState(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [previewState])
 
   const placeholderHeight = Math.max(frameWidth * pageRatio, 320)
 
@@ -841,6 +922,135 @@ function PdfPageCanvas({
       window.open(link.href, '_blank', 'noopener,noreferrer')
     }
   }
+
+  const buildPreviewRegionFromLocalRect = (
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+  ): PdfImageRegion | null => {
+    if (!previewTransform) {
+      return null
+    }
+
+    const safeLeft = clamp(left, 0, Math.max(0, pageSize.width - 1))
+    const safeTop = clamp(top, 0, Math.max(0, pageSize.height - 1))
+    const safeWidth = clamp(width, 1, Math.max(1, pageSize.width - safeLeft))
+    const safeHeight = clamp(height, 1, Math.max(1, pageSize.height - safeTop))
+    const viewportX = previewTransform.cropLeftCss + safeLeft / previewTransform.displayScale
+    const viewportY = previewTransform.cropTopCss + safeTop / previewTransform.displayScale
+    const regionWidthCss = safeWidth / previewTransform.displayScale
+    const regionHeightCss = safeHeight / previewTransform.displayScale
+    const regionLeftCss = clamp(
+      viewportX,
+      0,
+      Math.max(0, previewTransform.viewportWidth - regionWidthCss),
+    )
+    const regionTopCss = clamp(
+      viewportY,
+      0,
+      Math.max(0, previewTransform.viewportHeight - regionHeightCss),
+    )
+
+    return {
+      id: `${pageNumber}-selection-${Date.now()}`,
+      left: safeLeft,
+      top: safeTop,
+      width: safeWidth,
+      height: safeHeight,
+      normalizedLeft: regionLeftCss / previewTransform.viewportWidth,
+      normalizedTop: regionTopCss / previewTransform.viewportHeight,
+      normalizedWidth: regionWidthCss / previewTransform.viewportWidth,
+      normalizedHeight: regionHeightCss / previewTransform.viewportHeight,
+    }
+  }
+
+  const openSelectionPreview = (left: number, top: number, width: number, height: number) => {
+    const region = buildPreviewRegionFromLocalRect(left, top, width, height)
+    if (!region) {
+      return
+    }
+
+    setPreviewState({
+      region,
+      heading: 'Selection Preview',
+    })
+    onSelectionZoomChange?.(false)
+  }
+
+  const finalizeSelectionDrag = (drag: SelectionDragState | null) => {
+    if (!drag) {
+      return null
+    }
+
+    const left = Math.min(drag.startX, drag.currentX)
+    const top = Math.min(drag.startY, drag.currentY)
+    const width = Math.abs(drag.currentX - drag.startX)
+    const height = Math.abs(drag.currentY - drag.startY)
+
+    if (width >= 24 && height >= 24) {
+      openSelectionPreview(left, top, width, height)
+    }
+
+    return null
+  }
+
+  const getLocalPointFromClient = (clientX: number, clientY: number) => {
+    const pageSurface = pageSurfaceRef.current
+    if (!pageSurface) {
+      return null
+    }
+
+    const rect = pageSurface.getBoundingClientRect()
+    return {
+      x: clamp(clientX - rect.left, 0, rect.width),
+      y: clamp(clientY - rect.top, 0, rect.height),
+    }
+  }
+
+  useEffect(() => {
+    if (!selectionDrag) {
+      return
+    }
+
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      const point = getLocalPointFromClient(event.clientX, event.clientY)
+      if (!point) {
+        return
+      }
+
+      setSelectionDrag((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current,
+      )
+    }
+
+    const handleMouseUp = () => {
+      setSelectionDrag((current) => finalizeSelectionDrag(current))
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [selectionDrag])
+
+  const selectionBox =
+    selectionDrag
+      ? {
+          left: Math.min(selectionDrag.startX, selectionDrag.currentX),
+          top: Math.min(selectionDrag.startY, selectionDrag.currentY),
+          width: Math.abs(selectionDrag.currentX - selectionDrag.startX),
+          height: Math.abs(selectionDrag.currentY - selectionDrag.startY),
+        }
+      : null
 
   return (
     <section ref={hostRef} className="w-full" data-pdf-page-number={pageNumber}>
@@ -952,6 +1162,67 @@ function PdfPageCanvas({
                       标记
                     </button>
                   ) : null}
+
+                  {selectionZoomEnabled ? (
+                    <div
+                      className="absolute inset-0 z-30 cursor-crosshair bg-sky-50/0"
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        const point = getLocalPointFromClient(event.clientX, event.clientY)
+                        if (!point) {
+                          return
+                        }
+
+                        setPendingSelection(null)
+                        setSelectionDrag({
+                          startX: point.x,
+                          startY: point.y,
+                          currentX: point.x,
+                          currentY: point.y,
+                        })
+                      }}
+                      onMouseMove={(event) => {
+                        if (!selectionDrag) {
+                          return
+                        }
+
+                        const point = getLocalPointFromClient(event.clientX, event.clientY)
+                        if (!point) {
+                          return
+                        }
+
+                        setSelectionDrag((current) =>
+                          current
+                            ? {
+                                ...current,
+                                currentX: point.x,
+                                currentY: point.y,
+                              }
+                            : current,
+                        )
+                      }}
+                      onMouseUp={() => {
+                        setSelectionDrag((current) => finalizeSelectionDrag(current))
+                      }}
+                    >
+                      <div className="pointer-events-none absolute left-3 top-3 rounded-full bg-slate-950/78 px-3 py-1 text-[11px] uppercase tracking-[0.16em] text-white/90 shadow-sm">
+                        Drag To Zoom
+                      </div>
+
+                      {selectionBox ? (
+                        <div
+                          className="pointer-events-none absolute border-2 border-sky-500 bg-sky-400/10 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
+                          style={{
+                            left: `${selectionBox.left}px`,
+                            top: `${selectionBox.top}px`,
+                            width: `${selectionBox.width}px`,
+                            height: `${selectionBox.height}px`,
+                          }}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <div
@@ -965,7 +1236,202 @@ function PdfPageCanvas({
           </div>
         )}
       </div>
+
+      {previewState ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/42 backdrop-blur-[1px]"
+          onClick={() => setPreviewState(null)}
+        >
+          <div
+            className="flex max-h-[94vh] w-[92vw] max-w-[1600px] flex-col overflow-hidden rounded-2xl border border-academic-border bg-academic-panel shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-academic-border bg-white px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-academic-muted">
+                  {previewState.heading}
+                </p>
+                <p className="truncate text-sm text-academic-text">
+                  {paperId} · Page {pageNumber}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewState(null)}
+                className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover text-academic-text transition-colors hover:bg-academic-border"
+                title="关闭预览"
+                aria-label="关闭预览"
+              >
+                <i className="fa-solid fa-xmark text-sm"></i>
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto bg-academic-bg p-5">
+              <PdfImagePreview
+                pdfDocument={pdfDocument}
+                pageNumber={pageNumber}
+                region={previewState.region}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
+  )
+}
+
+function PdfImagePreview({
+  pdfDocument,
+  pageNumber,
+  region,
+}: {
+  pdfDocument: PDFDocumentProxy
+  pageNumber: number
+  region: PdfImageRegion
+}) {
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const renderTaskRef = useRef<RenderTask | null>(null)
+  const [frameWidth, setFrameWidth] = useState(0)
+  const [previewHeight, setPreviewHeight] = useState(320)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const node = frameRef.current
+    if (!node) {
+      return
+    }
+
+    const updateWidth = () => {
+      setFrameWidth(node.clientWidth)
+    }
+
+    updateWidth()
+    const observer = new ResizeObserver(() => updateWidth())
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (frameWidth === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    const renderPreview = async () => {
+      try {
+        const page = await pdfDocument.getPage(pageNumber)
+        if (cancelled) {
+          return
+        }
+
+        const baseViewport = page.getViewport({ scale: 1 })
+        const devicePixelRatio = window.devicePixelRatio || 1
+        const cropWidthAtScale1 = Math.max(baseViewport.width * region.normalizedWidth, 1)
+        const renderScale = clamp(
+          (frameWidth / cropWidthAtScale1) * IMAGE_PREVIEW_RENDER_OVERSCAN,
+          1,
+          MAX_IMAGE_PREVIEW_RENDER_BOOST,
+        )
+        const viewport = page.getViewport({ scale: renderScale })
+        const canvas = canvasRef.current
+        if (!canvas) {
+          return
+        }
+
+        const offscreenCanvas = document.createElement('canvas')
+        offscreenCanvas.width = Math.max(1, Math.floor(viewport.width * devicePixelRatio))
+        offscreenCanvas.height = Math.max(1, Math.floor(viewport.height * devicePixelRatio))
+
+        const offscreenContext = offscreenCanvas.getContext('2d', { alpha: false })
+        if (!offscreenContext) {
+          throw new Error('Failed to create preview render context')
+        }
+
+        offscreenContext.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+
+        renderTaskRef.current?.cancel()
+        const task = page.render({
+          canvas: offscreenCanvas,
+          canvasContext: offscreenContext,
+          viewport,
+        })
+        renderTaskRef.current = task
+        await task.promise
+
+        if (cancelled) {
+          return
+        }
+
+        const cropLeftCss = region.normalizedLeft * viewport.width
+        const cropTopCss = region.normalizedTop * viewport.height
+        const cropWidthCss = Math.max(region.normalizedWidth * viewport.width, 1)
+        const cropHeightCss = Math.max(region.normalizedHeight * viewport.height, 1)
+        const cropLeftPx = Math.round(cropLeftCss * devicePixelRatio)
+        const cropTopPx = Math.round(cropTopCss * devicePixelRatio)
+        const cropWidthPx = Math.max(1, Math.round(cropWidthCss * devicePixelRatio))
+        const cropHeightPx = Math.max(1, Math.round(cropHeightCss * devicePixelRatio))
+        const displayScale = frameWidth / cropWidthCss
+        const displayWidthCss = cropWidthCss * displayScale
+        const displayHeightCss = cropHeightCss * displayScale
+
+        const context = canvas.getContext('2d', { alpha: false })
+        if (!context) {
+          throw new Error('Failed to create preview canvas context')
+        }
+
+        canvas.width = Math.max(1, Math.round(cropWidthPx * displayScale))
+        canvas.height = Math.max(1, Math.round(cropHeightPx * displayScale))
+        canvas.style.width = `${displayWidthCss}px`
+        canvas.style.height = `${displayHeightCss}px`
+        context.setTransform(1, 0, 0, 1, 0, 0)
+        context.clearRect(0, 0, canvas.width, canvas.height)
+        context.drawImage(
+          offscreenCanvas,
+          cropLeftPx,
+          cropTopPx,
+          cropWidthPx,
+          cropHeightPx,
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        )
+
+        setPreviewHeight(displayHeightCss)
+        setPreviewError(null)
+      } catch (error) {
+        if (!cancelled && !(error instanceof Error && error.name === 'RenderingCancelledException')) {
+          setPreviewError(error instanceof Error ? error.message : 'Failed to render image preview')
+        }
+      }
+    }
+
+    void renderPreview()
+
+    return () => {
+      cancelled = true
+      renderTaskRef.current?.cancel()
+    }
+  }, [frameWidth, pageNumber, pdfDocument, region])
+
+  return (
+    <div ref={frameRef} className="mx-auto w-full max-w-[1480px]">
+      {previewError ? (
+        <div className="flex min-h-[280px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-6 text-center text-sm text-red-600">
+          {previewError}
+        </div>
+      ) : (
+        <div className="flex w-full items-center justify-center" style={{ minHeight: `${previewHeight}px` }}>
+          <canvas
+            ref={canvasRef}
+            className="block max-w-full rounded bg-white shadow-[0_12px_34px_rgba(15,23,42,0.12)]"
+            aria-label={`Magnified figure preview from page ${pageNumber}`}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -977,6 +1443,8 @@ export function PdfPaperViewer({
   onCreateAnnotation,
   onOpenReference,
   fallback,
+  selectionZoomEnabled = false,
+  onSelectionZoomChange,
 }: {
   paperId: string
   pdfUrl: string
@@ -985,6 +1453,8 @@ export function PdfPaperViewer({
   onCreateAnnotation?: (annotation: ReaderAnnotation) => void
   onOpenReference?: (target: LiteratureReferenceTarget) => void
   fallback?: ComponentChildren
+  selectionZoomEnabled?: boolean
+  onSelectionZoomChange?: (enabled: boolean) => void
 }) {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1045,6 +1515,21 @@ export function PdfPaperViewer({
     }
   }, [pdfDocument])
 
+  useEffect(() => {
+    onSelectionZoomChange?.(false)
+  }, [pdfUrl])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onSelectionZoomChange?.(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onSelectionZoomChange])
+
   if (loadError) {
     return (
       <div className="space-y-6">
@@ -1069,22 +1554,26 @@ export function PdfPaperViewer({
   }
 
   return (
-    <div className="space-y-5">
-      {Array.from({ length: pdfDocument.numPages }, (_, index) => (
-        <PdfPageCanvas
-          key={`${pdfUrl}-page-${index + 1}`}
-          paperId={paperId}
-          pdfDocument={pdfDocument}
-          pageNumber={index + 1}
-          annotations={(annotations ?? []).filter((annotation) => annotation.pageNumber === index + 1)}
-          onCreateAnnotation={onCreateAnnotation}
-          onOpenReference={onOpenReference}
-        />
-      ))}
+    <>
+      <div className="space-y-5">
+        {Array.from({ length: pdfDocument.numPages }, (_, index) => (
+          <PdfPageCanvas
+            key={`${pdfUrl}-page-${index + 1}`}
+            paperId={paperId}
+            pdfDocument={pdfDocument}
+            pageNumber={index + 1}
+            annotations={(annotations ?? []).filter((annotation) => annotation.pageNumber === index + 1)}
+            onCreateAnnotation={onCreateAnnotation}
+            onOpenReference={onOpenReference}
+            selectionZoomEnabled={selectionZoomEnabled}
+            onSelectionZoomChange={onSelectionZoomChange}
+          />
+        ))}
 
-      <div className="text-center text-xs text-academic-muted">
-        预览共 {pdfDocument.numPages} 页，页面会在接近视口时再渲染。
+        <div className="text-center text-xs text-academic-muted">
+          预览共 {pdfDocument.numPages} 页，页面会在接近视口时再渲染。
+        </div>
       </div>
-    </div>
+    </>
   )
 }

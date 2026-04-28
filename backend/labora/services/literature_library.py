@@ -80,6 +80,10 @@ class LiteratureLibrary:
         safe_name = self.sanitize_filename(paper_id)
         return self.preview_dir / f"{safe_name}.pdf"
 
+    def resolve_fallback_pdf_path(self, paper_id: str) -> Path:
+        safe_name = self.sanitize_filename(paper_id)
+        return self.preview_dir / f"{safe_name}.fallback.pdf"
+
     def get_paper(self, paper_id: str) -> Optional[Dict[str, Any]]:
         normalized_id = self.normalize_paper_id(paper_id)
 

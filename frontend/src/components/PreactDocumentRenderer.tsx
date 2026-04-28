@@ -79,6 +79,8 @@ type InlineFragment =
       paperId?: string
     }
 
+type ImagePreviewState = ImageBlock | null
+
 function shouldLogPerformance(enablePerfLog?: boolean): boolean {
   return Boolean(
     enablePerfLog &&
@@ -481,7 +483,13 @@ const TableBlockView = memo(function TableBlockView({
   )
 })
 
-const ImageBlockView = memo(function ImageBlockView({ block }: { block: ImageBlock }) {
+const ImageBlockView = memo(function ImageBlockView({
+  block,
+  onOpenPreview,
+}: {
+  block: ImageBlock
+  onOpenPreview?: (block: ImageBlock) => void
+}) {
   if (!block.src) {
     return (
       <figure className="rounded-lg border border-dashed border-academic-border bg-academic-hover/30 p-5">
@@ -505,7 +513,14 @@ const ImageBlockView = memo(function ImageBlockView({ block }: { block: ImageBlo
   }
 
   return (
-    <figure className="overflow-hidden rounded-lg border border-academic-border bg-academic-hover/40 p-3">
+    <figure
+      className="group relative overflow-hidden rounded-lg border border-academic-border bg-academic-hover/40 p-3 cursor-zoom-in"
+      onClick={() => onOpenPreview?.(block)}
+      title="点击放大图片"
+    >
+      <div className="absolute right-4 top-4 z-10 rounded-full bg-white/92 px-2 py-1 text-[11px] text-academic-muted shadow-sm opacity-0 transition-opacity group-hover:opacity-100">
+        放大
+      </div>
       <img
         src={block.src}
         alt={block.alt}
@@ -523,15 +538,17 @@ const ImageBlockView = memo(function ImageBlockView({ block }: { block: ImageBlo
 const BlockRenderer = memo(function BlockRenderer({
   block,
   onOpenReference,
+  onOpenImagePreview,
 }: {
   block: ContentBlock
   onOpenReference?: (target: LiteratureReferenceTarget) => void
+  onOpenImagePreview?: (block: ImageBlock) => void
 }) {
   switch (block.type) {
     case 'table':
       return <TableBlockView block={block} onOpenReference={onOpenReference} />
     case 'image':
-      return <ImageBlockView block={block} />
+      return <ImageBlockView block={block} onOpenPreview={onOpenImagePreview} />
     case 'latex':
       return <LatexBlockView block={block} />
     case 'paragraph':
@@ -543,9 +560,11 @@ const BlockRenderer = memo(function BlockRenderer({
 const RenderPageView = memo(function RenderPageView({
   page,
   onOpenReference,
+  onOpenImagePreview,
 }: {
   page: RenderPage
   onOpenReference?: (target: LiteratureReferenceTarget) => void
+  onOpenImagePreview?: (block: ImageBlock) => void
 }) {
   return (
     <section
@@ -577,6 +596,7 @@ const RenderPageView = memo(function RenderPageView({
             key={block.id}
             block={block}
             onOpenReference={onOpenReference}
+            onOpenImagePreview={onOpenImagePreview}
           />
         ))}
       </div>
@@ -598,6 +618,7 @@ export function PreactDocumentRenderer({
     () => buildRenderPages(paper, enablePerfLog),
     [enablePerfLog, paper],
   )
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState>(null)
 
   // Optimization: render only the first few pages eagerly; the rest mount on demand.
   const [visiblePageCount, setVisiblePageCount] = useState(
@@ -608,6 +629,10 @@ export function PreactDocumentRenderer({
   useEffect(() => {
     setVisiblePageCount(Math.min(INITIAL_RENDERED_PAGES, pages.length))
   }, [pages.length, paper.paper_id])
+
+  useEffect(() => {
+    setImagePreview(null)
+  }, [paper.paper_id])
 
   useEffect(() => {
     const node = loadMoreRef.current
@@ -639,9 +664,51 @@ export function PreactDocumentRenderer({
             key={page.id}
             page={page}
             onOpenReference={onOpenReference}
+            onOpenImagePreview={setImagePreview}
           />
         ))}
       </div>
+
+      {imagePreview ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/42 backdrop-blur-[1px]"
+          onClick={() => setImagePreview(null)}
+        >
+          <div
+            className="flex max-h-[92vh] w-[90vw] max-w-[1480px] flex-col overflow-hidden rounded-2xl border border-academic-border bg-academic-panel shadow-[0_24px_60px_rgba(15,23,42,0.28)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-academic-border bg-white px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-academic-muted">
+                  Figure Preview
+                </p>
+                <p className="truncate text-sm text-academic-text">
+                  {imagePreview.alt}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setImagePreview(null)}
+                className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover text-academic-text transition-colors hover:bg-academic-border"
+                title="关闭预览"
+                aria-label="关闭预览"
+              >
+                <i className="fa-solid fa-xmark text-sm"></i>
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto bg-academic-bg p-5">
+              <img
+                src={imagePreview.src ?? ''}
+                alt={imagePreview.alt}
+                decoding="async"
+                className="mx-auto max-h-[82vh] max-w-full object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {visiblePageCount < pages.length ? (
         <div ref={loadMoreRef} className="py-8 text-center text-xs text-academic-muted">

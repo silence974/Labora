@@ -7,6 +7,7 @@ import httpx
 from fastapi.testclient import TestClient
 from unittest.mock import patch, Mock
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from labora.api.app import create_app
@@ -473,6 +474,50 @@ class TestLiteratureAPI:
         assert response.headers["content-type"].startswith("application/pdf")
         assert response.headers["content-disposition"].startswith("inline;")
         assert response.content.startswith(b"%PDF-1.4")
+
+    def test_get_literature_pdf_proxy_falls_back_to_upstream_pdf(
+        self,
+        client,
+        temp_literature_library,
+        monkeypatch,
+    ):
+        """测试本地 LaTeX 编译失败时回退到上游 PDF"""
+        source_archive = temp_literature_library.resolve_download_path("2402.17764")
+        source_archive.write_text("\\documentclass{article}\\begin{document}Test\\end{document}", encoding="utf-8")
+
+        temp_literature_library.upsert_paper(
+            {
+                "id": "arxiv:2402.17764",
+                "paper_id": "2402.17764",
+                "arxiv_id": "2402.17764",
+                "title": "Fallback Preview Paper",
+                "local_path": str(source_archive),
+                "pdf_url": "https://arxiv.org/pdf/2402.17764.pdf",
+            }
+        )
+
+        def fake_compile_latex_archive_to_pdf(*args, **kwargs):
+            raise RuntimeError("File `bbm.sty' not found.")
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature.compile_latex_archive_to_pdf",
+            fake_compile_latex_archive_to_pdf,
+        )
+        monkeypatch.setattr(
+            "labora.api.routes.literature.httpx.AsyncClient",
+            FakeAsyncClient,
+        )
+
+        response = client.get("/api/literature/pdf/2402.17764")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.content.startswith(b"%PDF-1.4")
+
+        stored_paper = temp_literature_library.get_paper("2402.17764")
+        assert stored_paper is not None
+        assert stored_paper["preview_source"] == "arxiv_pdf_fallback"
+        assert Path(stored_paper["preview_pdf_path"]).exists()
 
     def test_get_external_preview_proxy_html(self, client, monkeypatch):
         """测试外链预览端点会代理 HTML 并注入 base href"""
