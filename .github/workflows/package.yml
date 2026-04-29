@@ -53,3 +53,4 @@ jobs:
         with:
           name: labora-desktop-linux-x64
           path: labora-desktop-*.tgz
+          retention-days: 7
