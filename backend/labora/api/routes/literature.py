@@ -19,8 +19,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from labora.core import config
 from labora.services import LiteratureLibrary
-from labora.tools import arxiv_get_paper, arxiv_search, compile_latex_archive_to_pdf
+from labora.tools import (
+    arxiv_get_paper,
+    arxiv_search,
+    compile_latex_archive_to_pdf,
+    is_latex_compiler_available,
+)
 from labora.tools.latex_parser import parse_latex_from_archive
 
 router = APIRouter()
@@ -138,6 +144,13 @@ def _build_pdf_view_url(request: Request, paper_id: str) -> str:
             paper_id=_normalize_paper_id(paper_id),
         )
     )
+
+
+def _resolve_pdf_preview_mode() -> str:
+    configured_mode = config.pdf_preview_mode
+    if configured_mode == "auto":
+        return "compile" if is_latex_compiler_available() else "remote"
+    return configured_mode
 
 
 def _validate_external_preview_url(url: str) -> str:
@@ -753,6 +766,11 @@ async def get_literature_pdf_view(paper_id: str):
     返回由本地 LaTeX 源码编译出的排版预览 PDF，用于前端按页渲染。
     """
     normalized_id = _normalize_paper_id(paper_id)
+    preview_mode = _resolve_pdf_preview_mode()
+
+    if preview_mode == "disabled":
+        raise HTTPException(status_code=404, detail="PDF preview is disabled by configuration")
+
     stored_paper = library.get_paper(normalized_id) or _build_minimal_paper(normalized_id)
     paper = await _ensure_local_source_download(stored_paper)
 
@@ -768,25 +786,35 @@ async def get_literature_pdf_view(paper_id: str):
     preview_pdf_path: Path
     preview_source: str
 
-    try:
-        preview_pdf_path = await asyncio.to_thread(
-            compile_latex_archive_to_pdf,
-            source_archive,
-            compiled_pdf_path,
-        )
-        preview_source = "compiled_latex_pdf"
-    except Exception as compile_exc:
+    if preview_mode == "remote":
         try:
             preview_pdf_path = await _ensure_pdf_preview_fallback(paper)
             preview_source = "arxiv_pdf_fallback"
         except Exception as fallback_exc:
             raise HTTPException(
                 status_code=502,
-                detail=(
-                    "Failed to compile LaTeX preview "
-                    f"({compile_exc}); fallback PDF fetch also failed ({fallback_exc})"
-                ),
-            ) from compile_exc
+                detail=f"Failed to fetch upstream PDF preview ({fallback_exc})",
+            ) from fallback_exc
+    else:
+        try:
+            preview_pdf_path = await asyncio.to_thread(
+                compile_latex_archive_to_pdf,
+                source_archive,
+                compiled_pdf_path,
+            )
+            preview_source = "compiled_latex_pdf"
+        except Exception as compile_exc:
+            try:
+                preview_pdf_path = await _ensure_pdf_preview_fallback(paper)
+                preview_source = "arxiv_pdf_fallback"
+            except Exception as fallback_exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Failed to compile LaTeX preview "
+                        f"({compile_exc}); fallback PDF fetch also failed ({fallback_exc})"
+                    ),
+                ) from compile_exc
 
     library.upsert_paper(
         {

@@ -3,5 +3,6 @@
   "openai_api_base": null,
   "openai_model": "gpt-4o-mini",
   "data_dir": null,
-  "db_path": null
+  "db_path": null,
+  "pdf_preview_mode": "auto"
 }

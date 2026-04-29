@@ -116,6 +116,44 @@ uv run pyinstaller labora.spec --clean
 
 ## 构建流程
 
+### npm 分发
+
+当前仓库支持把 Linux AppImage 包装成 npm 包。适合给已经安装 Node.js/npm 的 Linux x64 用户使用。
+
+维护者打包：
+
+```bash
+npm run pack:npm
+```
+
+这会先执行完整桌面端打包，然后生成：
+
+```bash
+labora-desktop-0.1.0.tgz
+```
+
+本地验证安装：
+
+```bash
+npm install -g ./labora-desktop-0.1.0.tgz
+labora
+```
+
+发布到 npm registry：
+
+```bash
+npm publish
+```
+
+用户安装：
+
+```bash
+npm install -g labora-desktop
+labora
+```
+
+注意：npm 包内包含 AppImage，包体大小接近 AppImage 本身。当前包只声明支持 Linux x64。
+
 ### 0. Python 项目配置（pyproject.toml）
 ```toml
 [project]

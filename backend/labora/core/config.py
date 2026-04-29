@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
+PDF_PREVIEW_MODES = {"auto", "compile", "remote", "disabled"}
+
 
 def get_default_data_dir() -> str:
     """获取默认数据目录"""
@@ -63,6 +65,19 @@ class Config:
             os.getenv("DB_PATH")
             or json_config.get("db_path")
             or str(Path(self.data_dir) / "labora.db")
+        )
+
+        # PDF 预览策略
+        raw_pdf_preview_mode = (
+            os.getenv("PDF_PREVIEW_MODE")
+            or json_config.get("pdf_preview_mode")
+            or "auto"
+        )
+        normalized_pdf_preview_mode = str(raw_pdf_preview_mode).strip().lower()
+        self.pdf_preview_mode: str = (
+            normalized_pdf_preview_mode
+            if normalized_pdf_preview_mode in PDF_PREVIEW_MODES
+            else "auto"
         )
 
     def _load_json_config(self) -> Dict[str, Any]:

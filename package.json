@@ -1,0 +1,23 @@
+{
+  "name": "labora-desktop",
+  "version": "0.1.0",
+  "description": "Labora desktop app packaged as a Linux AppImage",
+  "license": "Apache-2.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "labora": "bin/labora.js"
+  },
+  "files": [
+    "bin/",
+    "desktop/dist/*.AppImage"
+  ],
+  "scripts": {
+    "package": "node scripts/package-desktop.mjs",
+    "pack:npm": "npm run package && npm pack"
+  }
+}

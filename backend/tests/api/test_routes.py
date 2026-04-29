@@ -467,6 +467,10 @@ class TestLiteratureAPI:
             "labora.api.routes.literature.compile_latex_archive_to_pdf",
             fake_compile_latex_archive_to_pdf,
         )
+        monkeypatch.setattr(
+            "labora.api.routes.literature.config.pdf_preview_mode",
+            "compile",
+        )
 
         response = client.get("/api/literature/pdf/1706.03762")
 
@@ -506,6 +510,58 @@ class TestLiteratureAPI:
         monkeypatch.setattr(
             "labora.api.routes.literature.httpx.AsyncClient",
             FakeAsyncClient,
+        )
+        monkeypatch.setattr(
+            "labora.api.routes.literature.config.pdf_preview_mode",
+            "compile",
+        )
+
+        response = client.get("/api/literature/pdf/2402.17764")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.content.startswith(b"%PDF-1.4")
+
+        stored_paper = temp_literature_library.get_paper("2402.17764")
+        assert stored_paper is not None
+        assert stored_paper["preview_source"] == "arxiv_pdf_fallback"
+        assert Path(stored_paper["preview_pdf_path"]).exists()
+
+    def test_get_literature_pdf_proxy_remote_mode_skips_local_compile(
+        self,
+        client,
+        temp_literature_library,
+        monkeypatch,
+    ):
+        """测试 remote 模式下不依赖本地 TeX 编译，直接走上游 PDF"""
+        source_archive = temp_literature_library.resolve_download_path("2402.17764")
+        source_archive.write_text("\\documentclass{article}\\begin{document}Test\\end{document}", encoding="utf-8")
+
+        temp_literature_library.upsert_paper(
+            {
+                "id": "arxiv:2402.17764",
+                "paper_id": "2402.17764",
+                "arxiv_id": "2402.17764",
+                "title": "Remote Preview Paper",
+                "local_path": str(source_archive),
+                "pdf_url": "https://arxiv.org/pdf/2402.17764.pdf",
+            }
+        )
+
+        def fail_if_compile_called(*args, **kwargs):
+            raise AssertionError("compile_latex_archive_to_pdf should not be called in remote mode")
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature.compile_latex_archive_to_pdf",
+            fail_if_compile_called,
+        )
+        monkeypatch.setattr(
+            "labora.api.routes.literature.httpx.AsyncClient",
+            FakeAsyncClient,
+        )
+        monkeypatch.setattr(
+            "labora.api.routes.literature.config.pdf_preview_mode",
+            "remote",
         )
 
         response = client.get("/api/literature/pdf/2402.17764")

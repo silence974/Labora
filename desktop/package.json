@@ -5,7 +5,8 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"electron .\"",
-    "build": "tsc -p tsconfig.electron.json && electron-builder",
+    "build": "tsc -p tsconfig.electron.json",
+    "package": "npm run build && electron-builder",
     "preview": "electron ."
   },
   "dependencies": {

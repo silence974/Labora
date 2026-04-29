@@ -19,8 +19,7 @@ uv.lock
 # PyInstaller build artifacts
 backend/dist/
 backend/build/
-# Keep labora.spec in version control
-!backend/labora.spec
+backend/labora.spec
 
 # Testing
 .pytest_cache/
@@ -46,6 +45,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.npm-cache/
 
 # ============================================================
 # Frontend (Vite / React)
@@ -58,7 +58,8 @@ frontend/dist/
 desktop/dist/
 desktop/dist-electron/
 desktop/dist-frontend/
-desktop/resources/backend/   # 构建时从 backend/dist 复制，不入库
+# 构建时从 backend/dist 复制，不入库
+desktop/resources/backend/
 
 # ============================================================
 # Environment & Secrets
@@ -89,6 +90,8 @@ Thumbs.db
 # Logs & temp
 # ============================================================
 *.log
+*.tgz
 logs/
 tmp/
 temp/
+.tmp/

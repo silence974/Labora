@@ -12,6 +12,10 @@ from labora.tools.latex_parser import _extract_source_archive, _find_main_tex
 LATEX_BUILD_TIMEOUT_SECONDS = 180
 
 
+def is_latex_compiler_available() -> bool:
+    return shutil.which("latexmk") is not None
+
+
 def _run_latexmk(command: Sequence[str], workdir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
