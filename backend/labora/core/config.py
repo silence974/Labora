@@ -80,6 +80,13 @@ class Config:
             else "auto"
         )
 
+        # Agent 配置
+        self.max_agent_iterations: int = int(
+            os.getenv("MAX_AGENT_ITERATIONS")
+            or json_config.get("max_agent_iterations")
+            or "15"
+        )
+
     def _load_json_config(self) -> Dict[str, Any]:
         """从 ~/.config/labora/config.json 加载配置"""
         config_path = Path.home() / ".config" / "labora" / "config.json"

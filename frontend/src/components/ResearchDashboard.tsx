@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { KeyboardEvent, MouseEvent } from 'preact/compat'
+import ReactMarkdown from 'react-markdown'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import { deepReadApi } from '../api/deepRead'
 import type {
   DeepReadStatus,
@@ -16,6 +19,8 @@ import { PreactDocumentRenderer } from './PreactDocumentRenderer'
 import { PdfPaperViewer } from './PdfPaperViewer'
 import type { ReaderAnnotation } from './PdfPaperViewer'
 import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
+import { researchAgentApi } from '../api/researchAgent'
+import type { AgentStateResponse } from '../api/researchAgent'
 
 interface StartDeepReadDetail {
   paperId?: string
@@ -194,6 +199,92 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   const [activeReadResult, setActiveReadResult] = useState<string | null>(null)
   const [currentStages, setCurrentStages] = useState<DeepReadStages>({})
   const [readResultSearch, setReadResultSearch] = useState('')
+
+  // Agent state
+  const [agentPhase, setAgentPhase] = useState<'idle' | 'starting' | 'running' | 'waiting_input' | 'completed' | 'failed'>('idle')
+  const [agentQuestion, setAgentQuestion] = useState('')
+  const [agentDirection, setAgentDirection] = useState('')
+  const [agentTaskId, setAgentTaskId] = useState<string | null>(null)
+  const [agentState, setAgentState] = useState<AgentStateResponse | null>(null)
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [agentError, setAgentError] = useState<string | null>(null)
+  const [agentMessages, setAgentMessages] = useState<ChatMessage[]>([])
+  const [docViewMode, setDocViewMode] = useState<'source' | 'preview'>('preview')
+
+  const agentAddMessage = (msg: ChatMessage) => setAgentMessages(prev => [...prev, msg])
+
+  const agentStart = async () => {
+    if (!agentQuestion.trim()) return
+    setAgentLoading(true)
+    setAgentError(null)
+    setAgentPhase('starting')
+    setAgentMessages([])
+    try {
+      const result = await researchAgentApi.start({
+        research_question: agentQuestion,
+        initial_direction: agentDirection,
+      })
+      setAgentTaskId(result.task_id)
+      setAgentState(result)
+      agentAddMessage({ role: 'system', content: 'Research initialized. Document skeleton created.' })
+      agentAddMessage({ role: 'assistant', content: `**Planned Action:** ${result.planned_action?.type}\n**Rationale:** ${result.planned_action?.rationale || ''}\n**Params:** ${JSON.stringify(result.planned_action?.params, null, 2)}`, actions: [
+        { label: 'Accept', value: 'confirm' },
+        { label: 'Reject', value: 'reject' },
+      ]})
+      setAgentPhase('waiting_input')
+    } catch (e: unknown) {
+      setAgentError(e instanceof Error ? e.message : 'Failed to start')
+      setAgentPhase('failed')
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
+  const agentRespond = async (response: string) => {
+    if (!agentTaskId) return
+    const labelMap: Record<string, string> = { confirm: 'Accept this action', done: 'Finalize and finish', continue: 'Continue research', reject: 'Reject this action' }
+    agentAddMessage({ role: 'user', content: labelMap[response] || response })
+    setAgentLoading(true)
+    setAgentError(null)
+    setAgentPhase('running')
+    try {
+      const result = await researchAgentApi.resume(agentTaskId, { user_response: response })
+      setAgentState(result)
+      if (result.action_result && Object.keys(result.action_result).length > 0) {
+        agentAddMessage({ role: 'system', content: `**Action completed:** ${JSON.stringify(result.action_result, null, 2)}` })
+      }
+      if (result.status === 'interrupted') {
+        if (result.interrupt_type === 'confirm_action') {
+          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Next action?', actions: [
+            { label: 'Accept', value: 'confirm' }, { label: 'Reject', value: 'reject' },
+          ]})
+        } else if (result.interrupt_type === 'continue_decision') {
+          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Continue?', actions: [
+            { label: 'Continue', value: 'continue' }, { label: 'Finalize', value: 'done' },
+          ]})
+        } else {
+          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Your response?' })
+        }
+        setAgentPhase('waiting_input')
+      } else if (result.status === 'completed') {
+        agentAddMessage({ role: 'system', content: 'Research completed! Document is ready.' })
+        setAgentPhase('completed')
+      }
+    } catch (e: unknown) {
+      setAgentError(e instanceof Error ? e.message : 'Failed to resume')
+      setAgentPhase('failed')
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
+  const agentProgressSteps: ProgressStep[] = (agentState?.action_history || []).map((item: any, i: number) => ({
+    label: item.type || `Step ${i + 1}`,
+    status: (i < (agentState?.iteration_count || 0) - 1) ? 'completed' as const :
+            i === (agentState?.iteration_count || 0) - 1 ? 'active' as const : 'pending' as const,
+    description: (item.rationale || '').slice(0, 80),
+    progress: agentState?.status === 'completed' ? 100 : undefined,
+  }))
 
   const activeReadSummary = activeReadResult
     ? readResults.find((result) => result.task_id === activeReadResult)
@@ -467,49 +558,128 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
               <div className="w-px h-3 bg-academic-border mx-1"></div>
               <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-accent bg-red-50 hover:bg-red-100 transition-colors text-xs" title="Insert Math"><i className="fa-solid fa-square-root-variable"></i></button>
             </div>
-            <span className="text-xs text-academic-muted bg-academic-hover px-2 py-1 rounded">LaTeX Ready</span>
+            <div className="flex items-center gap-2">
+              {agentPhase !== 'idle' ? (
+                <>
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${
+                    agentPhase === 'completed' ? 'bg-green-100 text-green-700' :
+                    agentPhase === 'failed' ? 'bg-red-100 text-red-700' :
+                    'bg-blue-100 text-blue-700'
+                  }`}>
+                    {agentPhase === 'completed' ? 'Done' : agentPhase === 'failed' ? 'Error' : `Iter ${agentState?.iteration_count || 0}`}
+                  </span>
+                  <span className="text-[10px] text-academic-muted">
+                    {Object.keys(agentState?.literature_map || {}).length}p / {Object.keys(agentState?.reading_notes || {}).length}r
+                  </span>
+                  {agentPhase === 'completed' && (
+                    <button className="text-[10px] px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+                      onClick={() => {
+                        const blob = new Blob([agentState?.document || ''], { type: 'text/plain' })
+                        const url = URL.createObjectURL(blob); const a = document.createElement('a')
+                        a.href = url; a.download = 'research-document.tex'; a.click(); URL.revokeObjectURL(url)
+                      }}>Export .tex</button>
+                  )}
+                </>
+              ) : (
+                <button className="text-xs px-2 py-1 bg-academic-accent text-white rounded hover:bg-red-700 flex items-center gap-1"
+                  onClick={() => setAgentPhase('starting')}>
+                  <i className="fa-solid fa-robot text-[10px]"></i> Start Agent
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Editor Area */}
           <div className="flex-1 overflow-y-auto bg-white p-8">
-            <div className="max-w-4xl mx-auto">
-              <input
-                type="text"
-                defaultValue="Methodology: Comparing CNNs and Vision Transformers"
-                className="w-full font-serif text-2xl font-bold mb-3 outline-none text-academic-text bg-transparent placeholder-academic-muted border-b border-transparent focus:border-academic-border pb-2 transition-colors"
-                placeholder="Report Title..."
-              />
-
-              <div className="font-serif text-sm leading-relaxed text-academic-text/90 space-y-2">
-                <p>In this section, we analyze the fundamental differences between Convolutional Neural Networks (CNNs) and Vision Transformers (ViTs) in handling computer vision tasks.</p>
-
-                <h3 className="text-lg font-bold mt-6 mb-3">1. Receptive Fields and Inductive Bias</h3>
-                <p>CNNs inherently possess a strong inductive bias towards translation invariance and locality, processing images through hierarchical local receptive fields. This makes them highly efficient for capturing local textures and edges early in the network.</p>
-
-                <div className="my-5 p-5 bg-academic-bg border border-academic-border rounded-lg font-mono text-xs text-academic-muted relative group">
-                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                    <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-copy"></i></button>
-                    <button className="w-6 h-6 rounded bg-white shadow flex items-center justify-center hover:text-academic-accent"><i className="fa-solid fa-play"></i></button>
-                  </div>
-                  \begin{'{'}equation{'}'}
-                  <br />
-                  y_i = \sum_{'{'}j \in \mathcal{'{'}N{'}'}(i){'}'} w_j x_{'{'}i+j{'}'} + b
-                  <br />
-                  \end{'{'}equation{'}'}
-                  <div className="mt-2 pt-2 border-t border-academic-border border-dashed font-serif italic text-academic-text text-center">
-                    Rendered: <span className="latex-math">y<sub>i</sub> = &sum;<sub>j &isin; N(i)</sub> w<sub>j</sub> x<sub>i+j</sub> + b</span>
-                  </div>
+            {agentPhase !== 'idle' && agentPhase !== 'starting' ? (
+              <div className="max-w-4xl mx-auto flex flex-col h-full">
+                <div className="flex items-center gap-2 mb-2 shrink-0">
+                  <button
+                    className={`text-xs px-2 py-1 rounded ${docViewMode === 'preview' ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'}`}
+                    onClick={() => setDocViewMode('preview')}>Preview</button>
+                  <button
+                    className={`text-xs px-2 py-1 rounded ${docViewMode === 'source' ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-100'}`}
+                    onClick={() => setDocViewMode('source')}>Source</button>
                 </div>
-
-                <p>Conversely, as noted in recent literature, Vision Transformers rely on the self-attention mechanism, which globally connects all patches of an image from the very first layer. This allows ViTs to capture long-range dependencies immediately, reducing the inductive bias but requiring larger datasets for effective training.</p>
+                <div className="flex-1 overflow-auto">
+                  {agentState?.document ? (
+                    docViewMode === 'source' ? (
+                      <pre className="font-mono text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                        {agentState.document}
+                      </pre>
+                    ) : (
+                      <div className="prose prose-sm max-w-none text-sm leading-relaxed text-gray-800">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkMath]}
+                          rehypePlugins={[rehypeKatex]}
+                        >
+                          {agentState.document}
+                        </ReactMarkdown>
+                      </div>
+                    )
+                  ) : (
+                    <p className="text-academic-muted text-sm text-center py-12">Document will appear here as research progresses...</p>
+                  )}
+                </div>
               </div>
-            </div>
+            ) : agentPhase === 'starting' ? (
+              /* Start form */
+              <div className="max-w-lg mx-auto space-y-4 py-8">
+                <h3 className="text-base font-semibold text-gray-800">Start Research Agent</h3>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Research Question</label>
+                  <textarea className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-1 focus:ring-blue-100 focus:border-blue-400 outline-none" rows={2}
+                    value={agentQuestion} onInput={(e) => setAgentQuestion((e.target as HTMLTextAreaElement).value)}
+                    placeholder="e.g., What are the latest advances in diffusion models?" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Initial Direction (optional)</label>
+                  <input className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-1 focus:ring-blue-100 focus:border-blue-400 outline-none"
+                    value={agentDirection} onInput={(e) => setAgentDirection((e.target as HTMLInputElement).value)}
+                    placeholder="e.g., Focus on sampling speed improvements" />
+                </div>
+                {agentError && <p className="text-xs text-red-600">{agentError}</p>}
+                <div className="flex gap-2">
+                  <button className="flex-1 py-2 bg-academic-accent text-white rounded-md hover:bg-red-700 disabled:opacity-50 text-xs font-medium"
+                    onClick={agentStart} disabled={agentLoading || !agentQuestion.trim()}>
+                    {agentLoading ? 'Starting...' : 'Start Research'}
+                  </button>
+                  <button className="px-3 py-2 text-xs border border-gray-300 rounded-md text-gray-500 hover:bg-gray-50"
+                    onClick={() => { setAgentPhase('idle'); setAgentError(null) }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              /* Idle — clean state */
+              <div className="max-w-lg mx-auto py-16 text-center space-y-6">
+                <div className="text-academic-muted">
+                  <i className="fa-solid fa-robot text-5xl opacity-20"></i>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-700">Research Agent</h3>
+                <p className="text-sm text-gray-500">
+                  Start an AI-powered research session. The agent will search, read, compare papers,
+                  and build a LaTeX research document iteratively — with your guidance at each step.
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* Bottom Split - LLM Research Area - Only in Methodology */}
+          {/* Bottom Split - LLM Research Area */}
           <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
-            <ResearchProgress />
-            <AIChat />
+            {agentPhase !== 'idle' && agentPhase !== 'starting' ? (
+              <>
+                <ResearchProgress steps={agentProgressSteps.length > 0 ? agentProgressSteps : [
+                  { label: 'Initialize', status: agentLoading ? 'active' : 'pending', description: 'Setting up...', progress: agentLoading ? 30 : 0 },
+                ]} />
+                <AIChat messages={agentMessages} loading={agentLoading}
+                  onSend={agentPhase === 'waiting_input' ? agentRespond : undefined}
+                  placeholder={agentPhase === 'waiting_input' ? 'Respond or click a button above...' : 'Agent is working...'} />
+              </>
+            ) : (
+              <>
+                <ResearchProgress steps={[]} />
+                <AIChat />
+              </>
+            )}
           </div>
         </>
       ) : activeLeftDoc === 'litReview' ? (
@@ -1183,7 +1353,16 @@ function ErrorCard({ title, message }: { title: string; message: string }) {
   )
 }
 
-function ResearchProgress() {
+interface ProgressStep {
+  label: string
+  status: 'completed' | 'active' | 'pending'
+  description: string
+  progress?: number
+}
+
+function ResearchProgress({ steps }: { steps?: ProgressStep[] }) {
+  const displaySteps: ProgressStep[] = steps || []
+
   return (
     <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
       <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
@@ -1194,52 +1373,87 @@ function ResearchProgress() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
+        {displaySteps.length === 0 ? (
+          <p className="text-xs text-academic-muted text-center py-8">No progress yet. Start the agent to begin research.</p>
+        ) : (
         <div className="relative pl-4 space-y-5 before:absolute before:inset-y-0 before:left-[23px] before:w-px before:bg-academic-border">
-          {/* Completed */}
-          <div className="relative z-10 flex gap-3 opacity-60">
-            <div className="w-4 h-4 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-              <i className="fa-solid fa-check text-[8px]"></i>
-            </div>
-            <div>
-              <h4 className="font-medium text-xs text-academic-text">Literature Review</h4>
-              <p className="text-[10px] text-academic-muted mt-1">Found 12 relevant papers on ViT vs CNN.</p>
-            </div>
-          </div>
-
-          {/* Active */}
-          <div className="relative z-10 flex gap-3">
-            <div className="w-4 h-4 rounded-full border-2 border-academic-accent bg-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-              <div className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-pulse"></div>
-            </div>
-            <div className="w-full pr-4">
-              <h4 className="font-medium text-xs text-academic-accent flex items-center gap-2">
-                Methodology Drafting
-                <span className="px-1.5 py-0.5 rounded-sm bg-red-50 text-[9px] border border-red-100">In Progress</span>
-              </h4>
-              <div className="w-full bg-academic-hover h-1.5 rounded-full mt-2 overflow-hidden border border-academic-border">
-                <div className="bg-academic-accent h-full rounded-full w-[60%] relative">
-                  <div className="absolute inset-0 bg-white/20 w-full animate-shimmer"></div>
+          {displaySteps.map((step, i) => (
+            <div key={i} className={`relative z-10 flex gap-3 ${step.status === 'completed' ? 'opacity-60' : step.status === 'pending' ? 'opacity-50' : ''}`}>
+              {step.status === 'completed' ? (
+                <div className="w-4 h-4 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                  <i className="fa-solid fa-check text-[8px]"></i>
                 </div>
+              ) : step.status === 'active' ? (
+                <div className="w-4 h-4 rounded-full border-2 border-academic-accent bg-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                  <div className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-pulse"></div>
+                </div>
+              ) : (
+                <div className="w-4 h-4 rounded-full border-2 border-academic-border bg-white shrink-0 mt-0.5"></div>
+              )}
+              <div className={step.status === 'active' ? 'w-full pr-4' : ''}>
+                <h4 className={`font-medium text-xs ${step.status === 'active' ? 'text-academic-accent flex items-center gap-2' : 'text-academic-text'}`}>
+                  {step.label}
+                  {step.status === 'active' && (
+                    <span className="px-1.5 py-0.5 rounded-sm bg-red-50 text-[9px] border border-red-100">In Progress</span>
+                  )}
+                </h4>
+                {step.status === 'active' && step.progress !== undefined && (
+                  <div className="w-full bg-academic-hover h-1.5 rounded-full mt-2 overflow-hidden border border-academic-border">
+                    <div className="bg-academic-accent h-full rounded-full relative" style={{ width: `${step.progress}%` }}>
+                      <div className="absolute inset-0 bg-white/20 w-full animate-shimmer"></div>
+                    </div>
+                  </div>
+                )}
+                <p className="text-[10px] text-academic-muted mt-1.5">{step.description}</p>
               </div>
-              <p className="text-[10px] text-academic-muted mt-1.5">Drafting section on Receptive Fields...</p>
             </div>
-          </div>
-
-          {/* Pending */}
-          <div className="relative z-10 flex gap-3 opacity-50">
-            <div className="w-4 h-4 rounded-full border-2 border-academic-border bg-white shrink-0 mt-0.5"></div>
-            <div>
-              <h4 className="font-medium text-xs">Data Analysis</h4>
-              <p className="text-[10px] text-academic-muted mt-1">Awaiting methodology completion.</p>
-            </div>
-          </div>
+          ))}
         </div>
+        )}
       </div>
     </div>
   )
 }
 
-function AIChat() {
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  actions?: { label: string; value: string }[]
+}
+
+function AIChat({
+  messages,
+  onSend,
+  loading,
+  placeholder,
+}: {
+  messages?: ChatMessage[]
+  onSend?: (msg: string) => void
+  loading?: boolean
+  placeholder?: string
+}) {
+  const [input, setInput] = useState('')
+  const chatRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight
+    }
+  }, [messages])
+
+  const handleSend = () => {
+    const text = input.trim()
+    if (!text || !onSend) return
+    onSend(text)
+    setInput('')
+  }
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') handleSend()
+  }
+
+  const displayMessages: ChatMessage[] = messages || []
+
   return (
     <div className="w-1/2 flex flex-col bg-white">
       <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center justify-between px-3">
@@ -1254,44 +1468,81 @@ function AIChat() {
       </div>
 
       {/* Chat History */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        <div className="flex gap-3">
-          <div className="w-6 h-6 rounded-full overflow-hidden shrink-0 border border-academic-border">
-            <img src="https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg" className="w-full h-full object-cover" alt="User" />
-          </div>
-          <div className="bg-academic-bg border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs text-academic-text max-w-[85%]">
-            Can you summarize the main difference in inductive bias between CNNs and ViTs?
-          </div>
-        </div>
-
-        <div className="flex gap-3">
-          <div className="w-6 h-6 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 font-serif font-bold text-[10px]">
-            R
-          </div>
-          <div className="bg-academic-hover border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs text-academic-text max-w-[90%] space-y-2 shadow-sm">
-            <p>Certainly. The core differences are:</p>
-            <ul className="list-disc pl-4 space-y-1 text-academic-text/90">
-              <li><strong>CNNs:</strong> High inductive bias (locality, translation invariance) via local receptive fields. Good for small data.</li>
-              <li><strong>ViTs:</strong> Low inductive bias. Uses global self-attention from layer 1. Requires more data but scales better.</li>
-            </ul>
-            <div className="mt-2 pt-2 border-t border-academic-border flex justify-end gap-2">
-              <button className="text-[10px] text-academic-muted hover:text-academic-accent"><i className="fa-regular fa-copy"></i> Copy</button>
-              <button className="text-[10px] text-academic-muted hover:text-academic-accent"><i className="fa-solid fa-plus"></i> Add to Editor</button>
+      <div className="flex-1 overflow-y-auto p-6 space-y-4" ref={chatRef}>
+        {displayMessages.length === 0 && !loading && (
+          <p className="text-xs text-academic-muted text-center py-8">Start the agent to begin the research conversation.</p>
+        )}
+        {displayMessages.map((msg, i) => (
+          <div key={i} className="flex gap-3">
+            {msg.role === 'user' ? (
+              <div className="w-6 h-6 rounded-full overflow-hidden shrink-0 border border-academic-border">
+                <img src="https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg" className="w-full h-full object-cover" alt="User" />
+              </div>
+            ) : (
+              <div className="w-6 h-6 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 font-serif font-bold text-[10px]">
+                R
+              </div>
+            )}
+            <div className={`border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs max-w-[90%] shadow-sm ${
+              msg.role === 'user' ? 'bg-academic-bg text-academic-text max-w-[85%]' :
+              msg.role === 'system' ? 'bg-amber-50 text-amber-800 max-w-[90%]' :
+              'bg-academic-hover text-academic-text space-y-2'
+            }`}>
+              <div class="whitespace-pre-wrap">{msg.content}</div>
+              {msg.actions && msg.actions.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-academic-border flex justify-end gap-2">
+                  {msg.actions.map((action, j) => (
+                    <button
+                      key={j}
+                      className="text-[10px] bg-academic-accent text-white px-2 py-1 rounded hover:bg-red-700 transition-colors"
+                      onClick={() => onSend?.(action.value)}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
-        </div>
+        ))}
+
+        {loading && (
+          <div className="flex gap-3">
+            <div className="w-6 h-6 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 font-serif font-bold text-[10px]">R</div>
+            <div className="bg-academic-hover border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs text-academic-muted">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style="animation-delay: 0.1s"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style="animation-delay: 0.2s"></span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Chat Input */}
-      <div className="p-3 border-t border-academic-border bg-white shrink-0">
-        <div className="relative flex items-center">
-          <button className="absolute left-2 text-academic-muted hover:text-academic-accent transition-colors"><i className="fa-solid fa-paperclip text-xs"></i></button>
-          <input type="text" className="w-full bg-academic-bg border border-academic-border rounded-full py-2 pl-8 pr-10 text-xs focus:outline-none focus:border-academic-accent transition-colors text-academic-text" placeholder="Ask about your research..." />
-          <button className="absolute right-1 w-7 h-7 rounded-full bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors">
-            <i className="fa-solid fa-arrow-up text-[10px]"></i>
-          </button>
+      {onSend && (
+        <div className="p-3 border-t border-academic-border bg-white shrink-0">
+          <div className="relative flex items-center">
+            <input
+              type="text"
+              className="w-full bg-academic-bg border border-academic-border rounded-full py-2 pl-4 pr-10 text-xs focus:outline-none focus:border-academic-accent transition-colors text-academic-text"
+              placeholder={placeholder || 'Ask about your research...'}
+              value={input}
+              onInput={(e) => setInput((e.target as HTMLInputElement).value)}
+              onKeyDown={handleKeyDown}
+              disabled={loading}
+            />
+            <button
+              className="absolute right-1 w-7 h-7 rounded-full bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors disabled:opacity-50"
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+            >
+              <i className="fa-solid fa-arrow-up text-[10px]"></i>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
