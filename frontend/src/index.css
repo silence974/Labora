@@ -181,3 +181,33 @@ body {
 .viewer-scroll-track:hover .viewer-scroll-track__thumb {
   box-shadow: 0 0 0 4px rgba(211, 47, 47, 0.12);
 }
+
+.read-result-title-marquee {
+  --read-result-title-width: 10.75rem;
+  display: block;
+  width: var(--read-result-title-width);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.read-result-title-marquee__text {
+  display: inline-block;
+  min-width: 100%;
+  transform: translateX(0);
+}
+
+.group:hover .read-result-title-marquee__text {
+  animation: read-result-title-marquee 7s linear infinite alternate;
+}
+
+@keyframes read-result-title-marquee {
+  0%,
+  18% {
+    transform: translateX(0);
+  }
+
+  82%,
+  100% {
+    transform: translateX(min(0px, calc(var(--read-result-title-width) - 100%)));
+  }
+}

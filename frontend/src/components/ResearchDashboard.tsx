@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { KeyboardEvent, MouseEvent } from 'preact/compat'
 import { deepReadApi } from '../api/deepRead'
-import type { DeepReadResult } from '../api/deepRead'
+import type {
+  DeepReadStatus,
+  DeepReadStages,
+  DeepReadTask,
+  Stage1Result,
+  Stage2Result,
+  Stage3Result,
+  RelatedPaper,
+} from '../api/deepRead'
 import { literatureApi } from '../api/literature'
 import type { LiteratureDetail, LiteratureItem, RecentPaper } from '../api/literature'
 import { PreactDocumentRenderer } from './PreactDocumentRenderer'
@@ -10,6 +18,7 @@ import type { ReaderAnnotation } from './PdfPaperViewer'
 import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 
 interface StartDeepReadDetail {
+  paperId?: string
   paperTitle?: string
   paperUrl?: string
   paperContent?: string
@@ -17,6 +26,36 @@ interface StartDeepReadDetail {
 
 function openDownloadLink(url: string) {
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function formatPaperDisplayTitle(title: string) {
+  return title
+    .replace(/\$\\times\$/g, '×')
+    .replace(/\\times/g, '×')
+    .replace(/\$\\cdot\$/g, '·')
+    .replace(/\\cdot/g, '·')
+    .replace(/\$\\&\$/g, '&')
+    .replace(/\\&/g, '&')
+    .replace(/\$([^$]{1,24})\$/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function formatRelativeTime(value?: string) {
+  if (!value) return ''
+
+  const timestamp = new Date(value).getTime()
+  if (Number.isNaN(timestamp)) return ''
+
+  const diffMs = Date.now() - timestamp
+  const minute = 60 * 1000
+  const hour = 60 * minute
+  const day = 24 * hour
+
+  if (diffMs < minute) return '刚刚'
+  if (diffMs < hour) return `${Math.floor(diffMs / minute)}m`
+  if (diffMs < day) return `${Math.floor(diffMs / hour)}h`
+  return `${Math.floor(diffMs / day)}d`
 }
 
 type ReferencePreviewState =
@@ -148,37 +187,214 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   setActiveLeftDoc: (doc: 'methodology' | 'litReview' | 'dataAnalysis') => void
 }) {
   const [deepReadProgress, setDeepReadProgress] = useState(0)
+  const [deepReadStage, setDeepReadStage] = useState(0)
+  const [readResults, setReadResults] = useState<DeepReadTask[]>([])
+  const [readResultCache, setReadResultCache] = useState<Record<string, DeepReadStatus>>({})
   const [openReadResults, setOpenReadResults] = useState<string[]>([])
   const [activeReadResult, setActiveReadResult] = useState<string | null>(null)
-  const [currentResult, setCurrentResult] = useState<DeepReadResult | null>(null)
+  const [currentStages, setCurrentStages] = useState<DeepReadStages>({})
+  const [readResultSearch, setReadResultSearch] = useState('')
+
+  const activeReadSummary = activeReadResult
+    ? readResults.find((result) => result.task_id === activeReadResult)
+    : null
+  const filteredReadResults = readResults.filter((result) => {
+    const query = readResultSearch.trim().toLowerCase()
+    if (!query) return true
+    return (
+      result.paper_title.toLowerCase().includes(query) ||
+      result.paper_id.toLowerCase().includes(query)
+    )
+  })
+
+  const upsertReadResult = (result: DeepReadTask | DeepReadStatus) => {
+    const summary: DeepReadTask = {
+      task_id: result.task_id,
+      paper_id: result.paper_id,
+      paper_title: result.paper_title,
+      status: result.status,
+      progress: result.progress,
+      current_stage: result.current_stage,
+      stages: result.stages,
+      error: result.error,
+      created_at: result.created_at,
+      updated_at: result.updated_at,
+    }
+
+    setReadResults((previous) => {
+      const withoutCurrent = previous.filter((item) => item.task_id !== summary.task_id)
+      return [summary, ...withoutCurrent].sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      )
+    })
+
+    setReadResultCache((previous) => ({
+      ...previous,
+      [summary.task_id]: summary,
+    }))
+  }
+
+  const openReadResult = async (summary: DeepReadTask) => {
+    setActiveLeftDoc('litReview')
+    setOpenReadResults((previous) =>
+      previous.includes(summary.task_id) ? previous : [...previous, summary.task_id]
+    )
+    setActiveReadResult(summary.task_id)
+    setDeepReadProgress(summary.progress)
+    setDeepReadStage(summary.current_stage)
+    setCurrentStages(summary.stages || {})
+    upsertReadResult(summary)
+
+    if (summary.status === 'running' || summary.status === 'pending') {
+      return
+    }
+
+    try {
+      const status = await deepReadApi.getStatus(summary.task_id)
+      setDeepReadProgress(status.progress)
+      setDeepReadStage(status.current_stage)
+      setCurrentStages(status.stages || {})
+      upsertReadResult(status)
+    } catch (error) {
+      console.error('Failed to open deep read result:', error)
+    }
+  }
+
+  const getReadResultSummary = (taskId: string) => {
+    return readResultCache[taskId] || readResults.find((result) => result.task_id === taskId)
+  }
+
+  const handleCloseOpenReadResult = (taskId: string, event: MouseEvent<HTMLElement>) => {
+    event.stopPropagation()
+    const nextOpenResults = openReadResults.filter((id) => id !== taskId)
+    setOpenReadResults(nextOpenResults)
+
+    if (activeReadResult !== taskId) {
+      return
+    }
+
+    const nextActiveId = nextOpenResults[0] ?? null
+    setActiveReadResult(nextActiveId)
+
+    if (!nextActiveId) {
+      setDeepReadProgress(0)
+      setDeepReadStage(0)
+      setCurrentStages({})
+      return
+    }
+
+    const nextSummary = getReadResultSummary(nextActiveId)
+    if (nextSummary) {
+      void openReadResult(nextSummary)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadReadResults = async () => {
+      try {
+        const response = await deepReadApi.listTasks()
+        if (cancelled) return
+        setReadResults(response.tasks)
+        setReadResultCache((previous) => {
+          const next = { ...previous }
+          response.tasks.forEach((task) => {
+            next[task.task_id] = task
+          })
+          return next
+        })
+      } catch (error) {
+        console.error('Failed to load deep read results:', error)
+      }
+    }
+
+    void loadReadResults()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Listen for deep read events
   useEffect(() => {
     const handleStartDeepRead = async (event: Event) => {
       const detail = (event as CustomEvent<StartDeepReadDetail>).detail
+      const paperId = detail?.paperId || ''
       const paperTitle = detail?.paperTitle || 'Untitled Paper'
 
       setActiveLeftDoc('litReview')
-      setDeepReadProgress(0)
 
       try {
-        // 启动深度阅读任务
+        if (paperId) {
+          try {
+            const existing = await deepReadApi.getByPaper(paperId)
+            await openReadResult(existing)
+            window.alert('该文献已有深度阅读结果，已为你打开。')
+            return
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== 'NOT_FOUND') {
+              throw error
+            }
+          }
+        }
+
+        setDeepReadProgress(0)
+        setDeepReadStage(0)
+        setCurrentStages({})
+
         const { task_id } = await deepReadApi.startDeepRead({
+          paper_id: paperId,
           paper_title: paperTitle,
-          paper_url: detail?.paperUrl,
-          paper_content: detail?.paperContent
+          paper_content: detail?.paperContent,
         })
 
-        // 添加到打开的标签
-        setOpenReadResults(prev => [...prev, task_id])
+        const now = new Date().toISOString()
+        upsertReadResult({
+          task_id,
+          paper_id: paperId,
+          paper_title: paperTitle,
+          status: 'pending',
+          progress: 0,
+          current_stage: 0,
+          stages: {},
+          created_at: now,
+          updated_at: now,
+        })
+        setOpenReadResults(prev => prev.includes(task_id) ? prev : [...prev, task_id])
         setActiveReadResult(task_id)
 
-        // 轮询任务状态
-        const result = await deepReadApi.pollUntilComplete(task_id, (progress) => {
-          setDeepReadProgress(progress)
+        const result = await deepReadApi.pollUntilComplete(task_id, (poll) => {
+          setDeepReadProgress(poll.progress)
+          setDeepReadStage(poll.currentStage)
+          setCurrentStages(poll.stages)
+          upsertReadResult({
+            task_id,
+            paper_id: paperId,
+            paper_title: paperTitle,
+            status: poll.status,
+            progress: poll.progress,
+            current_stage: poll.currentStage,
+            stages: poll.stages,
+            created_at: now,
+            updated_at: new Date().toISOString(),
+          })
         })
 
-        setCurrentResult(result)
+        setDeepReadProgress(100)
+        setDeepReadStage(result.current_stage)
+        setCurrentStages(result.stages)
+        upsertReadResult({
+          task_id,
+          paper_id: result.paper_id || paperId,
+          paper_title: result.paper_title || paperTitle,
+          status: 'completed',
+          progress: 100,
+          current_stage: result.current_stage,
+          stages: result.stages,
+          created_at: now,
+          updated_at: new Date().toISOString(),
+        })
       } catch (error) {
         console.error('Deep read failed:', error)
       }
@@ -195,7 +411,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
       window.removeEventListener('startDeepRead', handleStartDeepRead as EventListener)
       window.removeEventListener('jumpToResult', handleJumpToResult)
     }
-  }, [setActiveLeftDoc])
+  }, [setActiveLeftDoc, readResults])
 
   return (
     <section className="flex-1 min-w-0 flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
@@ -297,11 +513,11 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
           </div>
         </>
       ) : activeLeftDoc === 'litReview' ? (
-        <div className="flex-1 flex gap-2">
+        <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
           {/* Middle Column: Tabs and List */}
-          <div className="w-64 flex flex-col gap-2 shrink-0">
+          <div className="w-64 min-h-0 flex flex-col gap-2 shrink-0">
             {/* Top: Open Read Results Tabs */}
-            <div className="h-1/2 bg-white border-2 border-academic-border rounded flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 bg-white border-2 border-academic-border rounded flex flex-col overflow-hidden">
               <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
                 <h3 className="font-serif text-xs font-bold flex items-center gap-2">
                   <i className="fa-solid fa-folder-open text-academic-accent text-xs"></i>
@@ -309,39 +525,49 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                 </h3>
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                {openReadResults.map((resultId, index) => (
-                  <div
-                    key={resultId}
-                    className={`flex items-center justify-between px-3 py-2 rounded text-xs font-medium transition-colors cursor-pointer ${
-                      activeReadResult === resultId
-                        ? 'bg-academic-accent text-white'
-                        : 'bg-academic-hover text-academic-text hover:bg-academic-border'
-                    }`}
-                    onClick={() => setActiveReadResult(resultId)}
-                  >
-                    <div className="flex items-center gap-2">
-                      <i className="fa-solid fa-file-lines"></i>
-                      <span>阅读结果 {index + 1}</span>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenReadResults(prev => prev.filter(id => id !== resultId))
-                        if (activeReadResult === resultId && openReadResults.length > 1) {
-                          setActiveReadResult(openReadResults[0] === resultId ? openReadResults[1] : openReadResults[0])
+                {openReadResults.map((resultId) => {
+                  const summary = getReadResultSummary(resultId)
+                  const title = summary?.paper_title || '未命名文献'
+
+                  return (
+                    <div
+                      key={resultId}
+                      className={`group flex items-center justify-between px-3 py-2 rounded text-xs font-medium transition-colors cursor-pointer ${
+                        activeReadResult === resultId
+                          ? 'bg-academic-accent text-white'
+                          : 'bg-academic-hover text-academic-text hover:bg-academic-border'
+                      }`}
+                      onClick={() => {
+                        if (summary) {
+                          void openReadResult(summary)
+                        } else {
+                          setActiveReadResult(resultId)
                         }
                       }}
-                      className="hover:text-red-500"
+                      title={title}
                     >
-                      <i className="fa-solid fa-xmark text-xs"></i>
-                    </button>
-                  </div>
-                ))}
+                      <div className="min-w-0 flex flex-1 items-center gap-2">
+                        <i className="fa-solid fa-file-lines shrink-0"></i>
+                        <span className="read-result-title-marquee">
+                          <span className="read-result-title-marquee__text">{title}</span>
+                        </span>
+                      </div>
+                      <button
+                        onClick={(e) => handleCloseOpenReadResult(resultId, e)}
+                        className="ml-2 shrink-0 hover:text-red-500"
+                        aria-label="关闭阅读结果"
+                        title="关闭阅读结果"
+                      >
+                        <i className="fa-solid fa-xmark text-xs"></i>
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
             {/* Bottom: All Read Results List with Search */}
-            <div className="h-1/2 bg-white border-2 border-academic-border rounded flex flex-col overflow-hidden">
+            <div className="flex-1 min-h-0 bg-white border-2 border-academic-border rounded flex flex-col overflow-hidden">
               <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
                 <h3 className="font-serif text-xs font-bold flex items-center gap-2">
                   <i className="fa-solid fa-clock-rotate-left text-academic-accent text-xs"></i>
@@ -353,6 +579,8 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                   <input
                     type="text"
                     placeholder="搜索..."
+                    value={readResultSearch}
+                    onInput={(event) => setReadResultSearch(event.currentTarget.value)}
                     className="w-full bg-academic-bg border border-academic-border rounded py-1.5 pl-3 pr-8 text-xs focus:outline-none focus:border-academic-accent transition-colors"
                   />
                   <button className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors">
@@ -361,45 +589,59 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                <div className="bg-academic-hover border border-academic-border rounded p-2 hover:bg-academic-border transition-colors cursor-pointer">
-                  <div className="flex items-start justify-between mb-1">
-                    <h4 className="text-xs font-medium text-academic-text">Transformers in Vision</h4>
-                    <span className="text-[10px] text-academic-muted">2h</span>
-                  </div>
-                  <div className="flex gap-1">
-                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[10px] rounded">完成</span>
-                    <span className="px-1.5 py-0.5 bg-white text-[10px] rounded">12引用</span>
-                  </div>
-                </div>
+                {filteredReadResults.length > 0 ? (
+                  filteredReadResults.map((result) => {
+                    const statusText =
+                      result.status === 'completed' ? '完成' :
+                      result.status === 'failed' ? '失败' :
+                      result.status === 'running' ? `${result.progress}%` :
+                      '等待'
+                    const statusClass =
+                      result.status === 'completed' ? 'bg-green-100 text-green-700' :
+                      result.status === 'failed' ? 'bg-red-100 text-red-700' :
+                      result.status === 'running' ? 'bg-yellow-100 text-yellow-700' :
+                      'bg-academic-border text-academic-muted'
 
-                <div className="bg-academic-hover border border-academic-border rounded p-2 hover:bg-academic-border transition-colors cursor-pointer">
-                  <div className="flex items-start justify-between mb-1">
-                    <h4 className="text-xs font-medium text-academic-text">Attention Is All You Need</h4>
-                    <span className="text-[10px] text-academic-muted">1d</span>
+                    return (
+                      <div
+                        key={result.task_id}
+                        className={`border rounded p-2 transition-colors cursor-pointer ${
+                          activeReadResult === result.task_id
+                            ? 'bg-red-50 border-academic-accent'
+                            : 'bg-academic-hover border-academic-border hover:bg-academic-border'
+                        }`}
+                        onClick={() => void openReadResult(result)}
+                        title={result.paper_title}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <h4 className="text-xs font-medium text-academic-text line-clamp-2">{result.paper_title}</h4>
+                          <span className="shrink-0 text-[10px] text-academic-muted">{formatRelativeTime(result.updated_at)}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          <span className={`px-1.5 py-0.5 text-[10px] rounded ${statusClass}`}>{statusText}</span>
+                          <span className="px-1.5 py-0.5 bg-white text-[10px] rounded text-academic-muted">{result.paper_id}</span>
+                        </div>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="flex h-full items-center justify-center text-center text-xs text-academic-muted">
+                    暂无阅读结果
                   </div>
-                  <div className="flex gap-1">
-                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[10px] rounded">完成</span>
-                    <span className="px-1.5 py-0.5 bg-white text-[10px] rounded">8引用</span>
-                  </div>
-                </div>
-
-                <div className="bg-academic-hover border border-academic-border rounded p-2 hover:bg-academic-border transition-colors cursor-pointer">
-                  <div className="flex items-start justify-between mb-1">
-                    <h4 className="text-xs font-medium text-academic-text">An Image is Worth 16x16 Words</h4>
-                    <span className="text-[10px] text-academic-muted">3d</span>
-                  </div>
-                  <div className="flex gap-1">
-                    <span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 text-[10px] rounded">45%</span>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           </div>
 
           {/* Right Column: Current Read Result Content */}
-          <div className="flex-1 bg-white border-2 border-academic-border rounded overflow-hidden">
-            {openReadResults.length > 0 ? (
-              <DeepReadResultView progress={deepReadProgress} result={currentResult} />
+          <div className="flex-1 min-w-0 min-h-0 bg-white border-2 border-academic-border rounded overflow-hidden">
+            {activeReadResult ? (
+              <DeepReadResultView
+                progress={deepReadProgress}
+                currentStage={deepReadStage}
+                stages={currentStages}
+                paperTitle={activeReadSummary?.paper_title}
+              />
             ) : (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center text-academic-muted">
@@ -422,71 +664,520 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   )
 }
 
-function DeepReadResultView({ progress, result }: { progress: number; result: DeepReadResult | null }) {
-  return (
-    <div className="flex-1 bg-white overflow-y-auto p-8">
-      <div className="max-w-4xl mx-auto">
-        <h2 className="font-serif text-2xl font-bold mb-6 text-academic-text">深度阅读结果</h2>
+function DeepReadResultView({
+  progress,
+  currentStage,
+  stages,
+  paperTitle,
+}: {
+  progress: number
+  currentStage: number
+  stages: DeepReadStages
+  paperTitle?: string
+}) {
+  const [activeTab, setActiveTab] = useState<'stage1' | 'stage2' | 'stage3'>('stage1')
 
-        {/* Progress Section */}
-        <div className="mb-8 p-6 bg-academic-hover border border-academic-border rounded-lg">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-serif text-lg font-bold text-academic-text">阅读进度</h3>
-            <span className="text-sm font-medium text-academic-accent">{progress}%</span>
-          </div>
-          <div className="w-full bg-white h-3 rounded-full overflow-hidden border border-academic-border">
-            <div
-              className="bg-academic-accent h-full rounded-full transition-all duration-500 relative"
-              style={{ width: `${progress}%` }}
-            >
-              <div className="absolute inset-0 bg-white/20 animate-shimmer"></div>
+  const stage1 = stages['1']
+  const stage2 = stages['2']
+  const stage3 = stages['3']
+  const hasStageData = (stage: DeepReadStages[keyof DeepReadStages]) => {
+    if (!stage || stage.error) return false
+    return Object.entries(stage).some(([key, value]) => {
+      if (key === 'error') return false
+      if (Array.isArray(value)) return value.length > 0
+      return value !== null && value !== undefined && String(value).trim() !== ''
+    })
+  }
+  const hasStage1 = hasStageData(stage1)
+  const hasStage2 = hasStageData(stage2)
+  const hasStage3 = hasStageData(stage3)
+  const isStage1Complete = !!stage1 && !stage1.error &&
+    !!stage1.tl_dr &&
+    !!stage1.research_problem &&
+    !!stage1.core_insight &&
+    Array.isArray(stage1.method_overview)
+  const isStage2Complete = !!stage2 && !stage2.error &&
+    Array.isArray(stage2.key_techniques) &&
+    !!stage2.differences_from_baseline &&
+    Array.isArray(stage2.assumptions) &&
+    !!stage2.experimental_setup &&
+    Array.isArray(stage2.key_results) &&
+    Array.isArray(stage2.surprising_findings) &&
+    !!stage2.critical_reading
+  const isStage3Complete = !!stage3 && !stage3.error &&
+    Array.isArray(stage3.predecessor_papers) &&
+    Array.isArray(stage3.successor_papers) &&
+    !!stage3.field_position
+
+  const stageState = (
+    n: number,
+    stage: DeepReadStages[keyof DeepReadStages],
+    isComplete: boolean,
+  ) => {
+    if (stage?.error) return 'error'
+    if (isComplete || currentStage > n) return 'completed'
+    if (currentStage === n || hasStageData(stage)) return 'active'
+    return 'pending'
+  }
+
+  const isStageAvailable = (n: number, stage: DeepReadStages[keyof DeepReadStages]) => {
+    return n === 1 || !!stage || currentStage >= n
+  }
+
+  const handleOpenRelatedPaper = (arxivId: string) => {
+    if (!arxivId) return
+    window.dispatchEvent(new CustomEvent('openRelatedPaper', {
+      detail: { paperId: arxivId },
+    }))
+  }
+
+  const tabs = [
+    {
+      key: 'stage1' as const,
+      n: 1,
+      label: '核心理解',
+      icon: 'fa-lightbulb',
+      state: stageState(1, stage1, isStage1Complete),
+      isAvailable: isStageAvailable(1, stage1),
+    },
+    {
+      key: 'stage2' as const,
+      n: 2,
+      label: '深度分析',
+      icon: 'fa-microscope',
+      state: stageState(2, stage2, isStage2Complete),
+      isAvailable: isStageAvailable(2, stage2),
+    },
+    {
+      key: 'stage3' as const,
+      n: 3,
+      label: '学术脉络',
+      icon: 'fa-project-diagram',
+      state: stageState(3, stage3, isStage3Complete),
+      isAvailable: isStageAvailable(3, stage3),
+    },
+  ]
+
+  useEffect(() => {
+    const availableTabs = [
+      { key: 'stage1' as const, isAvailable: true },
+      { key: 'stage2' as const, isAvailable: !!stage2 || currentStage >= 2 },
+      { key: 'stage3' as const, isAvailable: !!stage3 || currentStage >= 3 },
+    ]
+    const currentTab = availableTabs.find((tab) => tab.key === activeTab)
+    if (currentTab?.isAvailable) {
+      return
+    }
+
+    const firstAvailableTab = availableTabs.find((tab) => tab.isAvailable)
+    if (firstAvailableTab) {
+      setActiveTab(firstAvailableTab.key)
+    }
+  }, [activeTab, currentStage, stage1, stage2, stage3])
+
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-white">
+      {/* Fixed header: title + progress + tabs */}
+      <div className="shrink-0 px-8 pt-8">
+        <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-3">
+          <h2 className="font-serif text-2xl font-bold text-academic-text" title={paperTitle}>
+            深度阅读结果
+          </h2>
+
+          <div className="min-w-[280px] max-w-xl flex-1">
+            <div className="mb-1.5 flex items-center gap-2">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-academic-border">
+                <div
+                  className="h-full rounded-full bg-academic-accent transition-all duration-500"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <span className="w-10 text-right text-xs font-medium text-academic-accent">{progress}%</span>
+            </div>
+
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+              {tabs.map(({ n, label, state }) => {
+                const dotClass =
+                  state === 'completed' ? 'bg-academic-accent text-white' :
+                  state === 'error' ? 'bg-red-100 text-red-600 border border-red-200' :
+                  state === 'active' ? 'border-2 border-academic-accent bg-white' :
+                  'border-2 border-academic-border bg-white'
+                const textClass =
+                  state === 'active' ? 'text-academic-accent font-medium' :
+                  state === 'error' ? 'text-red-600 font-medium' :
+                  'text-academic-muted'
+
+                return (
+                  <div key={n} className="flex items-center gap-1.5">
+                    <div className={`w-2.5 h-2.5 rounded-full flex items-center justify-center ${dotClass}`}>
+                      {state === 'completed' ? <i className="fa-solid fa-check text-[5px]"></i> :
+                       state === 'error' ? <i className="fa-solid fa-exclamation text-[5px]"></i> :
+                       state === 'active' ? <div className="w-1 h-1 rounded-full bg-academic-accent animate-pulse"></div> :
+                       null}
+                    </div>
+                    <span className={textClass}>{label}</span>
+                  </div>
+                )
+              })}
             </div>
           </div>
-          {progress < 100 ? (
-            <p className="text-xs text-academic-muted mt-3">正在分析文献内容...</p>
-          ) : (
-            <p className="text-xs text-academic-accent mt-3">✓ 分析完成</p>
-          )}
         </div>
 
-        {/* Results Section */}
-        {progress >= 100 && result && (
-          <div className="space-y-6">
-            <div className="p-6 bg-white border border-academic-border rounded-lg">
-              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">摘要</h4>
-              <p className="text-sm text-academic-text/90">{result.summary}</p>
-            </div>
+        {/* Tab Navigation */}
+        <div className="flex gap-2 border-b border-academic-border pb-0">
+          {tabs.map(({ key, label, icon, isAvailable }) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              disabled={!isAvailable}
+              className={`px-4 py-2 text-sm rounded-t-lg transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed ${
+                activeTab === key
+                  ? 'bg-white border border-academic-border border-b-white -mb-[1px] text-academic-accent font-medium'
+                  : 'text-academic-muted hover:text-academic-text hover:bg-academic-hover'
+              }`}
+            >
+              <i className={`fa-solid ${icon} text-xs`}></i>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-            <div className="p-6 bg-white border border-academic-border rounded-lg">
-              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">核心观点</h4>
-              <ul className="space-y-2 text-sm text-academic-text/90">
-                {result.key_points.map((point, index) => (
-                  <li key={index} className="flex gap-2">
-                    <span className="text-academic-accent">•</span>
-                    <span>{point}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+      {/* Scrollable content area */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-8 pb-8 pt-5">
+        <div className="max-w-4xl mx-auto space-y-4">
+          {/* Stage 1 */}
+          {activeTab === 'stage1' && (
+            <>
+              {hasStage1 ? (
+                <Stage1Cards result={stage1 as Partial<Stage1Result>} />
+              ) : stage1?.error ? (
+                <ErrorCard title="核心理解" message={stage1.error} />
+              ) : (
+                <LoadingCard title="核心理解" active={currentStage === 1} />
+              )}
+            </>
+          )}
 
-            <div className="p-6 bg-white border border-academic-border rounded-lg">
-              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">关键引用</h4>
-              {result.key_quotes.map((quote, index) => (
-                <div key={index} className="mb-4 last:mb-0">
-                  <blockquote className="text-sm font-serif italic border-l-2 border-academic-accent pl-4 text-academic-text/80 mb-1">
-                    {quote.text}
-                  </blockquote>
-                  <p className="text-xs text-academic-muted pl-4">— {quote.section}</p>
-                </div>
-              ))}
-            </div>
+          {/* Stage 2 */}
+          {activeTab === 'stage2' && (
+            <>
+              {hasStage2 ? (
+                <Stage2Cards result={stage2 as Partial<Stage2Result>} />
+              ) : stage2?.error ? (
+                <ErrorCard title="深度分析" message={stage2.error} />
+              ) : currentStage < 2 ? (
+                <PendingCard title="深度分析" />
+              ) : (
+                <LoadingCard title="深度分析" active={currentStage === 2} />
+              )}
+            </>
+          )}
 
-            <div className="p-6 bg-white border border-academic-border rounded-lg">
-              <h4 className="font-serif text-base font-bold mb-3 text-academic-text">引用统计</h4>
-              <p className="text-sm text-academic-text/90">本文共被引用 <span className="font-bold text-academic-accent">{result.citations_count}</span> 次</p>
-            </div>
+          {/* Stage 3 */}
+          {activeTab === 'stage3' && (
+            <>
+              {hasStage3 ? (
+                <Stage3Cards
+                  result={stage3 as Partial<Stage3Result>}
+                  onOpenPaper={handleOpenRelatedPaper}
+                />
+              ) : stage3?.error ? (
+                <ErrorCard title="学术脉络" message={stage3.error} />
+              ) : currentStage < 3 ? (
+                <PendingCard title="学术脉络" />
+              ) : (
+                <LoadingCard title="学术脉络" active={currentStage === 3} />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Stage Card Components ──────────────────────────────────────────────────
+
+function CollapsibleCard({ title, icon, defaultOpen = true, children }: {
+  title: string
+  icon: string
+  defaultOpen?: boolean
+  children: any
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="bg-white border border-academic-border rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-5 py-3 hover:bg-academic-hover transition-colors"
+      >
+        <h4 className="font-serif text-sm font-bold text-academic-text flex items-center gap-2">
+          <i className={`fa-solid ${icon} text-academic-accent text-xs`}></i>
+          {title}
+        </h4>
+        <i className={`fa-solid fa-chevron-${open ? 'up' : 'down'} text-xs text-academic-muted`}></i>
+      </button>
+      {open && <div className="px-5 pb-4">{children}</div>}
+    </div>
+  )
+}
+
+function Stage1Cards({ result }: { result: Partial<Stage1Result> }) {
+  return (
+    <>
+      {result.tl_dr && (
+        <div className="p-5 bg-gradient-to-r from-red-50 to-white border border-academic-border rounded-lg">
+          <p className="text-base font-serif font-bold text-academic-accent leading-relaxed">
+            {result.tl_dr}
+          </p>
+        </div>
+      )}
+      {result.research_problem && (
+        <CollapsibleCard title="研究问题" icon="fa-circle-question">
+          <p className="text-sm text-academic-text/90 leading-relaxed">{result.research_problem}</p>
+        </CollapsibleCard>
+      )}
+      {result.core_insight && (
+        <CollapsibleCard title="核心洞察" icon="fa-lightbulb">
+          <p className="text-sm text-academic-text/90 leading-relaxed">{result.core_insight}</p>
+        </CollapsibleCard>
+      )}
+      {result.method_overview && result.method_overview.length > 0 && (
+        <CollapsibleCard title="方法概述" icon="fa-diagram-project">
+          <ol className="space-y-2">
+            {result.method_overview.map((step, i) => (
+              <li key={i} className="flex gap-3 text-sm text-academic-text/90">
+                <span className="text-academic-accent font-bold shrink-0">{i + 1}.</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+        </CollapsibleCard>
+      )}
+    </>
+  )
+}
+
+function Stage2Cards({ result }: { result: Partial<Stage2Result> }) {
+  return (
+    <>
+      {result.key_techniques && result.key_techniques.length > 0 && (
+        <CollapsibleCard title="关键技术" icon="fa-gear">
+          <div className="space-y-3">
+            {result.key_techniques.map((tech, i) => (
+              <div key={i} className="p-3 bg-academic-hover rounded-lg">
+                <h5 className="text-sm font-bold text-academic-text">{tech.name}</h5>
+                <p className="text-xs text-academic-text/70 mt-1">{tech.description}</p>
+              </div>
+            ))}
           </div>
+        </CollapsibleCard>
+      )}
+      {result.differences_from_baseline && (
+        <CollapsibleCard title="与 Baseline 的本质区别" icon="fa-code-branch">
+          <p className="text-sm text-academic-text/90 leading-relaxed">{result.differences_from_baseline}</p>
+        </CollapsibleCard>
+      )}
+      {result.assumptions && result.assumptions.length > 0 && (
+        <CollapsibleCard title="前提假设" icon="fa-scale-balanced">
+          <ul className="space-y-1.5">
+            {result.assumptions.map((a, i) => (
+              <li key={i} className="flex gap-2 text-sm text-academic-text/80">
+                <span className="text-academic-accent">•</span>
+                <span>{a}</span>
+              </li>
+            ))}
+          </ul>
+        </CollapsibleCard>
+      )}
+      {result.experimental_setup && (
+        <CollapsibleCard title="实验设计" icon="fa-flask" defaultOpen={false}>
+          <p className="text-sm text-academic-text/90 leading-relaxed">{result.experimental_setup}</p>
+        </CollapsibleCard>
+      )}
+      {result.key_results && result.key_results.length > 0 && (
+        <CollapsibleCard title="核心实验结果" icon="fa-chart-bar" defaultOpen={false}>
+          <div className="space-y-3">
+            {result.key_results.map((kr, i) => (
+              <div key={i} className="p-3 bg-academic-hover rounded-lg">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-bold text-academic-text">{kr.metric}</span>
+                  <span className="text-xs bg-academic-accent text-white px-2 py-0.5 rounded font-mono">{kr.value}</span>
+                </div>
+                <p className="text-xs text-academic-text/70">{kr.interpretation}</p>
+              </div>
+            ))}
+          </div>
+        </CollapsibleCard>
+      )}
+      {result.surprising_findings && result.surprising_findings.length > 0 && (
+        <CollapsibleCard title="意外发现" icon="fa-wand-magic-sparkles" defaultOpen={false}>
+          <ul className="space-y-1.5">
+            {result.surprising_findings.map((f, i) => (
+              <li key={i} className="flex gap-2 text-sm text-academic-text/80">
+                <span className="text-amber-500">!</span>
+                <span>{f}</span>
+              </li>
+            ))}
+          </ul>
+        </CollapsibleCard>
+      )}
+      {result.critical_reading && (
+        <CollapsibleCard title="批判性阅读" icon="fa-comment-dots">
+        <div className="space-y-4">
+          {result.critical_reading.strengths?.length > 0 && <div>
+            <h5 className="text-xs font-bold text-green-700 mb-1.5">亮点</h5>
+            <ul className="space-y-1">
+              {result.critical_reading.strengths.map((s, i) => (
+                <li key={i} className="flex gap-2 text-sm text-academic-text/80">
+                  <span className="text-green-500">+</span>
+                  <span>{s}</span>
+                </li>
+              ))}
+            </ul>
+          </div>}
+          {result.critical_reading.limitations?.length > 0 && <div>
+            <h5 className="text-xs font-bold text-red-700 mb-1.5">局限</h5>
+            <ul className="space-y-1">
+              {result.critical_reading.limitations.map((l, i) => (
+                <li key={i} className="flex gap-2 text-sm text-academic-text/80">
+                  <span className="text-red-500">-</span>
+                  <span>{l}</span>
+                </li>
+              ))}
+            </ul>
+          </div>}
+          {result.critical_reading.reproducibility && <div>
+            <h5 className="text-xs font-bold text-academic-text mb-1.5">可复现性</h5>
+            <p className="text-sm text-academic-text/70">{result.critical_reading.reproducibility}</p>
+          </div>}
+        </div>
+      </CollapsibleCard>
+      )}
+    </>
+  )
+}
+
+function Stage3Cards({ result, onOpenPaper }: {
+  result: Partial<Stage3Result>
+  onOpenPaper: (arxivId: string) => void
+}) {
+  const predecessorPapers = result.predecessor_papers ?? []
+  const successorPapers = result.successor_papers ?? []
+
+  return (
+    <>
+      {result.field_position && (
+        <CollapsibleCard title="领域定位" icon="fa-compass">
+          <p className="text-sm text-academic-text/90 leading-relaxed">{result.field_position}</p>
+        </CollapsibleCard>
+      )}
+      {result.predecessor_papers && (
+        <CollapsibleCard title={`前驱论文 (${predecessorPapers.length})`} icon="fa-arrow-left">
+        {predecessorPapers.length > 0 ? (
+          <div className="grid gap-2">
+            {predecessorPapers.map((paper, i) => (
+              <RelatedPaperCard key={i} paper={paper} onOpen={onOpenPaper} />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-academic-muted">未找到前驱论文信息</p>
         )}
+      </CollapsibleCard>
+      )}
+      {result.successor_papers && (
+        <CollapsibleCard title={`后继论文 (${successorPapers.length})`} icon="fa-arrow-right">
+        {successorPapers.length > 0 ? (
+          <div className="grid gap-2">
+            {successorPapers.map((paper, i) => (
+              <RelatedPaperCard key={i} paper={paper} onOpen={onOpenPaper} />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-academic-muted">未找到后继论文信息</p>
+        )}
+      </CollapsibleCard>
+      )}
+    </>
+  )
+}
+
+function RelatedPaperCard({ paper, onOpen }: {
+  paper: RelatedPaper
+  onOpen: (arxivId: string) => void
+}) {
+  return (
+    <div
+      className="p-3 border border-academic-border rounded-lg hover:bg-academic-hover hover:border-academic-accent cursor-pointer transition-all group"
+      onClick={() => onOpen(paper.arxiv_id)}
+    >
+      <h5 className="text-sm font-medium text-academic-text group-hover:text-academic-accent transition-colors line-clamp-2">
+        {paper.title}
+      </h5>
+      <div className="flex items-center gap-2 mt-1.5">
+        <span className="text-xs text-academic-muted">
+          {paper.authors?.slice(0, 2).join(', ') || 'Unknown'}
+        </span>
+        {paper.year && (
+          <span className="text-xs text-academic-muted bg-academic-hover px-1.5 py-0.5 rounded">{paper.year}</span>
+        )}
+        <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-academic-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto"></i>
+      </div>
+      {paper.relevance && (
+        <p className="text-xs mt-1.5 text-academic-text/60 italic">{paper.relevance}</p>
+      )}
+    </div>
+  )
+}
+
+// ── Placeholder Cards ──────────────────────────────────────────────────────
+
+function LoadingCard({ title, active }: { title: string; active: boolean }) {
+  return (
+    <div className="bg-white border border-academic-border rounded-lg p-5">
+      <div className="flex items-center gap-3">
+        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+          active ? 'border-academic-accent' : 'border-academic-border'
+        }`}>
+          {active && <div className="w-2 h-2 rounded-full bg-academic-accent animate-pulse"></div>}
+        </div>
+        <div>
+          <h4 className="font-serif text-sm font-bold text-academic-text">{title}</h4>
+          <p className="text-xs text-academic-muted mt-0.5">
+            {active ? '正在分析中...' : '等待中...'}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PendingCard({ title }: { title: string }) {
+  return (
+    <div className="bg-white border border-academic-border rounded-lg p-5 opacity-50">
+      <div className="flex items-center gap-3">
+        <div className="w-5 h-5 rounded-full border-2 border-academic-border shrink-0"></div>
+        <div>
+          <h4 className="font-serif text-sm font-bold text-academic-text">{title}</h4>
+          <p className="text-xs text-academic-muted mt-0.5">等待前置阶段完成...</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ErrorCard({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-5">
+      <div className="flex items-center gap-3">
+        <div className="w-5 h-5 rounded-full bg-red-200 text-red-600 flex items-center justify-center shrink-0">
+          <i className="fa-solid fa-exclamation text-[10px]"></i>
+        </div>
+        <div>
+          <h4 className="font-serif text-sm font-bold text-red-700">{title}</h4>
+          <p className="text-xs text-red-600 mt-0.5">{message}</p>
+        </div>
       </div>
     </div>
   )
@@ -622,6 +1313,7 @@ function RightWorkspace() {
   const isReferencePreviewOpen = referencePreview.kind !== 'closed'
   const currentWorkspaceTitle =
     showSearch || !activePaper ? 'Literature Search' : activePaper.title
+  const currentWorkspaceDisplayTitle = formatPaperDisplayTitle(currentWorkspaceTitle)
 
   const handleClosePaper = (paperId: string, event: MouseEvent<HTMLElement>) => {
     event.stopPropagation()
@@ -765,6 +1457,7 @@ function RightWorkspace() {
 
     const event = new CustomEvent<StartDeepReadDetail>('startDeepRead', {
       detail: {
+        paperId: activePaper.paper_id,
         paperTitle: activePaper.title,
         paperUrl: activePaper.local_source_url ?? activePaper.url ?? activePaper.source_url,
         paperContent: activePaper.original_text ?? activePaper.abstract,
@@ -840,6 +1533,20 @@ function RightWorkspace() {
     }
   }, [isReferencePreviewOpen])
 
+  useEffect(() => {
+    const handleOpenRelatedPaper = async (event: Event) => {
+      const detail = (event as CustomEvent<{ paperId: string }>).detail
+      if (detail?.paperId) {
+        await handleOpenPaperById(detail.paperId)
+      }
+    }
+
+    window.addEventListener('openRelatedPaper', handleOpenRelatedPaper)
+    return () => {
+      window.removeEventListener('openRelatedPaper', handleOpenRelatedPaper)
+    }
+  }, [])
+
   return (
     <section className="relative flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
@@ -853,14 +1560,14 @@ function RightWorkspace() {
               <div ref={paperMenuRef} className="relative min-w-0 flex-1">
                 <button
                   type="button"
-                  className="flex w-full min-w-0 items-center gap-2 border-b-2 border-academic-accent px-3 py-1 text-sm font-medium text-academic-text transition-colors hover:text-academic-accent"
+                  className="flex w-full min-w-0 items-center gap-2 rounded-sm border-b-2 border-academic-accent px-3 py-1 text-sm font-medium text-academic-text transition-colors hover:text-academic-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-academic-accent/25"
                   onClick={() => setIsPaperMenuOpen((current) => !current)}
-                  title={currentWorkspaceTitle}
+                  title={currentWorkspaceDisplayTitle}
                   aria-haspopup="menu"
                   aria-expanded={isPaperMenuOpen}
                 >
                   <span className="min-w-0 flex-1 truncate text-left">
-                    {currentWorkspaceTitle}
+                    {currentWorkspaceDisplayTitle}
                   </span>
                   <span className="shrink-0 text-[10px] text-academic-muted">
                     <i className={`fa-solid ${isPaperMenuOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
@@ -908,9 +1615,9 @@ function RightWorkspace() {
                               setActivePaperId(paper.paper_id)
                               setIsPaperMenuOpen(false)
                             }}
-                            title={paper.title}
+                            title={formatPaperDisplayTitle(paper.title)}
                           >
-                            <span className="block truncate">{paper.title}</span>
+                            <span className="block truncate">{formatPaperDisplayTitle(paper.title)}</span>
                           </button>
 
                           <button

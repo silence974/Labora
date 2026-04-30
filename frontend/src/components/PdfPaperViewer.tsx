@@ -146,6 +146,20 @@ function isMostlyHorizontal(rotation: number) {
   return Math.abs(Math.sin(rotation)) <= HORIZONTAL_TEXT_SIN_THRESHOLD
 }
 
+function isPdfWorkerLifecycleError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const message = error.message.toLowerCase()
+  return (
+    message.includes('sendwithpromise') ||
+    message.includes('worker was destroyed') ||
+    message.includes('transport destroyed') ||
+    message.includes('loading task destroyed')
+  )
+}
+
 function isLikelyLeftSidebarSpan(span: PositionedTextSpan, pageWidthCss: number) {
   return (
     Math.abs(Math.sin(span.rotation)) >= SIDEBAR_ROTATION_SIN_THRESHOLD &&
@@ -447,6 +461,7 @@ function PdfPageCanvas({
   const [hasRendered, setHasRendered] = useState(false)
   const [pageRatio, setPageRatio] = useState(DEFAULT_PAGE_RATIO)
   const [frameWidth, setFrameWidth] = useState(0)
+  const [renderRetryCount, setRenderRetryCount] = useState(0)
   const [pageError, setPageError] = useState<string | null>(null)
   const [textSpans, setTextSpans] = useState<PositionedTextSpan[]>([])
   const [pageLinks, setPageLinks] = useState<PdfPageLinkOverlay[]>([])
@@ -772,7 +787,20 @@ function PdfPageCanvas({
         }
       } catch (error) {
         if (!cancelled && !(error instanceof Error && error.name === 'RenderingCancelledException')) {
-          setPageError(error instanceof Error ? error.message : 'Failed to render PDF page')
+          if (isPdfWorkerLifecycleError(error) && renderRetryCount < 2) {
+            window.setTimeout(() => {
+              if (!cancelled) {
+                setRenderRetryCount((current) => current + 1)
+              }
+            }, 180 * (renderRetryCount + 1))
+            return
+          }
+
+          setPageError(
+            isPdfWorkerLifecycleError(error)
+              ? '该页渲染被 PDF 预览任务中断，请滚动页面或重新打开文献重试。'
+              : error instanceof Error ? error.message : 'Failed to render PDF page',
+          )
         }
       }
     }
@@ -783,7 +811,11 @@ function PdfPageCanvas({
       cancelled = true
       renderTaskRef.current?.cancel()
     }
-  }, [frameWidth, hasRendered, isNearViewport, pageNumber, pdfDocument])
+  }, [frameWidth, hasRendered, isNearViewport, pageNumber, pdfDocument, renderRetryCount])
+
+  useEffect(() => {
+    setRenderRetryCount(0)
+  }, [pageNumber, paperId, pdfDocument])
 
   useEffect(() => {
     setPendingSelection(null)
@@ -1293,6 +1325,7 @@ function PdfImagePreview({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const renderTaskRef = useRef<RenderTask | null>(null)
   const [frameWidth, setFrameWidth] = useState(0)
+  const [renderRetryCount, setRenderRetryCount] = useState(0)
   const [previewHeight, setPreviewHeight] = useState(320)
   const [previewError, setPreviewError] = useState<string | null>(null)
 
@@ -1403,7 +1436,20 @@ function PdfImagePreview({
         setPreviewError(null)
       } catch (error) {
         if (!cancelled && !(error instanceof Error && error.name === 'RenderingCancelledException')) {
-          setPreviewError(error instanceof Error ? error.message : 'Failed to render image preview')
+          if (isPdfWorkerLifecycleError(error) && renderRetryCount < 2) {
+            window.setTimeout(() => {
+              if (!cancelled) {
+                setRenderRetryCount((current) => current + 1)
+              }
+            }, 180 * (renderRetryCount + 1))
+            return
+          }
+
+          setPreviewError(
+            isPdfWorkerLifecycleError(error)
+              ? '局部预览渲染被 PDF 预览任务中断，请重试。'
+              : error instanceof Error ? error.message : 'Failed to render image preview',
+          )
         }
       }
     }
@@ -1414,7 +1460,11 @@ function PdfImagePreview({
       cancelled = true
       renderTaskRef.current?.cancel()
     }
-  }, [frameWidth, pageNumber, pdfDocument, region])
+  }, [frameWidth, pageNumber, pdfDocument, region, renderRetryCount])
+
+  useEffect(() => {
+    setRenderRetryCount(0)
+  }, [pageNumber, pdfDocument, region])
 
   return (
     <div ref={frameRef} className="mx-auto w-full max-w-[1480px]">

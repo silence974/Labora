@@ -660,3 +660,190 @@ class TestLiteratureAPI:
         recent_response = client.get("/api/literature/recent")
         recent = recent_response.json()["papers"]
         assert recent[0]["is_downloaded"] is True
+
+
+class TestDeepReadAPI:
+    """测试深度阅读 API"""
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_start_deep_read(self, mock_run, client, mock_env):
+        """测试启动深度阅读任务"""
+        mock_run.return_value = {
+            "paper_id": "2301.12345",
+            "paper_title": "Test Paper",
+            "stages": {
+                "1": {"tl_dr": "test"},
+                "2": {"key_techniques": []},
+                "3": {"predecessor_papers": []},
+            },
+        }
+
+        response = client.post(
+            "/api/deep-read/start",
+            json={
+                "paper_id": "2301.12345",
+                "paper_title": "Test Paper",
+                "paper_content": "Paper full text content",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
+        assert data["status"] == "pending"
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_start_deep_read_minimal(self, mock_run, client, mock_env):
+        """测试最小参数启动深度阅读"""
+        mock_run.return_value = {
+            "paper_id": "2301.12345",
+            "paper_title": "2301.12345",
+            "stages": {},
+        }
+
+        response = client.post(
+            "/api/deep-read/start",
+            json={"paper_id": "2301.12345"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
+
+    def test_get_nonexistent_task(self, client):
+        """测试获取不存在的任务"""
+        response = client.get("/api/deep-read/nonexistent/status")
+        assert response.status_code == 404
+
+    def test_list_tasks(self, client):
+        """测试列出所有任务"""
+        response = client.get("/api/deep-read/")
+        assert response.status_code == 200
+        data = response.json()
+        assert "tasks" in data
+        assert isinstance(data["tasks"], list)
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_delete_task(self, mock_run, client, mock_env):
+        """测试删除任务"""
+        mock_run.return_value = {"stages": {}}
+        # Create a task first
+        start_resp = client.post(
+            "/api/deep-read/start",
+            json={"paper_id": "2301.12345", "paper_title": "T"},
+        )
+        task_id = start_resp.json()["task_id"]
+
+        # Delete it
+        response = client.delete(f"/api/deep-read/{task_id}")
+        assert response.status_code == 200
+        assert response.json()["task_id"] == task_id
+
+        # Verify deleted
+        status_resp = client.get(f"/api/deep-read/{task_id}/status")
+        assert status_resp.status_code == 404
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_progressive_status_includes_stages(self, mock_run, client, mock_env):
+        """测试渐进式状态返回包含阶段结果"""
+        # Configure mock to simulate progressive results
+        progress_values = []
+
+        def mock_run_with_progress(*args, **kwargs):
+            on_progress = kwargs.get("on_progress")
+            if on_progress:
+                from labora.agent.deep_reader import Stage1Result, Stage2Result, Stage3Result
+                on_progress(33, 1, Stage1Result(
+                    tl_dr="Test TLDR",
+                    research_problem="A problem",
+                    core_insight="An insight",
+                    method_overview=["Step 1"],
+                ))
+                on_progress(66, 2, Stage2Result(
+                    key_techniques=[],
+                    differences_from_baseline="Different",
+                    assumptions=[],
+                    experimental_setup="Setup",
+                    key_results=[],
+                    surprising_findings=[],
+                    critical_reading={"strengths": [], "limitations": [], "reproducibility": "Good"},
+                ))
+            return {
+                "paper_id": "2301.12345",
+                "paper_title": "Test",
+                "stages": {"1": {"tl_dr": "x"}, "2": {"key_techniques": []}, "3": {}},
+            }
+
+        mock_run.side_effect = mock_run_with_progress
+
+        response = client.post(
+            "/api/deep-read/start",
+            json={
+                "paper_id": "2301.12345",
+                "paper_title": "Test Paper",
+                "paper_content": "content",
+            },
+        )
+        task_id = response.json()["task_id"]
+
+        # Status should show current_stage and stages
+        status_resp = client.get(f"/api/deep-read/{task_id}/status")
+        assert status_resp.status_code == 200
+        status_data = status_resp.json()
+        assert "current_stage" in status_data
+        assert "stages" in status_data
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_result_is_unique_per_paper(self, mock_run, client, mock_env):
+        """同一篇文献只保存一份深度阅读结果"""
+        paper_id = "9999.00001"
+
+        mock_run.return_value = {
+            "paper_id": paper_id,
+            "paper_title": "Stored Paper",
+            "stages": {"1": {"tl_dr": "stored"}},
+        }
+
+        first_response = client.post(
+            "/api/deep-read/start",
+            json={"paper_id": paper_id, "paper_title": "First Title"},
+        )
+        second_response = client.post(
+            "/api/deep-read/start",
+            json={"paper_id": paper_id, "paper_title": "Second Title"},
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+
+        list_response = client.get("/api/deep-read/")
+        assert list_response.status_code == 200
+        matches = [
+            item
+            for item in list_response.json()["tasks"]
+            if item["paper_id"] == paper_id
+        ]
+        assert len(matches) == 1
+        assert matches[0]["paper_title"] == "Second Title"
+
+    @patch("labora.api.routes.deep_read.run_deep_reading")
+    def test_get_result_by_paper(self, mock_run, client, mock_env):
+        """可以按文献 ID 查询已有深度阅读结果"""
+        paper_id = "9999.00002"
+        mock_run.return_value = {
+            "paper_id": paper_id,
+            "paper_title": "Lookup Paper",
+            "stages": {"1": {"tl_dr": "lookup"}},
+        }
+
+        start_response = client.post(
+            "/api/deep-read/start",
+            json={"paper_id": paper_id, "paper_title": "Lookup Paper"},
+        )
+        assert start_response.status_code == 200
+
+        response = client.get(f"/api/deep-read/paper/{paper_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["paper_id"] == paper_id
+        assert data["paper_title"] == "Lookup Paper"

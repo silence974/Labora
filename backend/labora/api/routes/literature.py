@@ -9,12 +9,12 @@ import html
 import math
 import mimetypes
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
+from httpx import HTTPStatusError, HTTPError, TimeoutException
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -278,67 +278,38 @@ async def _search_arxiv_paginated(
     year: Optional[str] = None,
 ) -> Dict[str, Any]:
     start = (page - 1) * page_size
-    search_query = f"all:{query}"
-    if year:
-        search_query = (
-            f"({search_query}) AND "
-            f"submittedDate:[{year}01010000 TO {year}12312359]"
-        )
+    # Fetch more than needed so we can slice for pagination without extra API calls.
+    # arxiv package handles rate limiting internally.
+    fetch_count = start + page_size
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(
-            "https://export.arxiv.org/api/query",
-            params={
-                "search_query": search_query,
-                "start": start,
-                "max_results": page_size,
-                "sortBy": "relevance",
-                "sortOrder": "descending",
-            },
-        )
-        response.raise_for_status()
+    raw_results = await asyncio.to_thread(
+        arxiv_search.invoke,
+        {"query": query, "max_results": fetch_count},
+    )
 
-    root = ET.fromstring(response.text)
-    ns = {
-        "atom": "http://www.w3.org/2005/Atom",
-        "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
-    }
+    total = len(raw_results)
+    page_items = raw_results[start : start + page_size]
 
-    total_results_text = root.findtext("opensearch:totalResults", default="0", namespaces=ns)
-    total = int(total_results_text)
     items: List[Dict[str, Any]] = []
-
-    for entry in root.findall("atom:entry", ns):
-        paper_id = entry.findtext("atom:id", default="", namespaces=ns).split("/")[-1]
-        title = entry.findtext("atom:title", default="", namespaces=ns).strip().replace("\n", " ")
-        abstract = entry.findtext("atom:summary", default="", namespaces=ns).strip().replace("\n", " ")
-        published = entry.findtext("atom:published", default="", namespaces=ns)
-        updated = entry.findtext("atom:updated", default="", namespaces=ns)
-
-        authors = [
-            author.findtext("atom:name", default="", namespaces=ns)
-            for author in entry.findall("atom:author", ns)
-        ]
-
-        tags = [category.get("term") for category in entry.findall("atom:category", ns) if category.get("term")]
-
+    for paper in page_items:
+        paper_id = paper.get("arxiv_id", "")
         items.append(
             {
                 "id": f"arxiv:{paper_id}",
                 "paper_id": paper_id,
                 "arxiv_id": paper_id,
-                "title": title,
-                "abstract": abstract or None,
-                "authors": [author for author in authors if author],
-                "year": published[:4] if published else "",
+                "title": paper.get("title", ""),
+                "abstract": paper.get("abstract"),
+                "authors": paper.get("authors", []),
+                "year": str(paper.get("year")) if paper.get("year") else "",
                 "source": "arXiv",
                 "url": f"https://arxiv.org/abs/{paper_id}" if paper_id else None,
                 "source_url": _build_source_url(paper_id),
-                "tags": tags[:5],
-                "categories": tags,
-                "primary_category": tags[0] if tags else None,
-                "published": published or None,
-                "updated": updated or None,
+                "tags": paper.get("categories", [])[:5],
+                "categories": paper.get("categories", []),
+                "primary_category": paper.get("primary_category"),
+                "published": paper.get("published"),
+                "updated": paper.get("updated"),
             }
         )
 
@@ -519,7 +490,7 @@ async def _ensure_local_source_download(paper: Dict[str, Any]) -> Dict[str, Any]
     if not destination.exists():
         try:
             await _download_binary(source_url, destination)
-        except httpx.HTTPError as exc:
+        except (HTTPError, TimeoutException) as exc:
             return {
                 **paper,
                 "source_url": source_url,
@@ -574,29 +545,18 @@ async def search_literature(
                 page_size=page_size,
                 year=search_request.year,
             )
-        except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 429:
-                search_result = library.search_papers_paginated(
-                    query=query,
-                    year=search_request.year,
-                    source=source,
-                    page=page,
-                    page_size=page_size,
-                )
-                notice = (
-                    "arXiv is temporarily rate limiting requests. "
-                    "Showing cached local results instead."
-                )
-            else:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Failed to search arXiv: {exc}",
-                ) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to search arXiv: {exc}",
-            ) from exc
+        except Exception as exc:
+            search_result = library.search_papers_paginated(
+                query=query,
+                year=search_request.year,
+                source=source,
+                page=page,
+                page_size=page_size,
+            )
+            notice = (
+                "arXiv API is currently unavailable. "
+                "Showing cached local results instead."
+            )
 
         for paper in search_result["items"]:
             stored_paper = library.upsert_paper(paper)
@@ -711,7 +671,7 @@ async def download_literature(
     if not destination.exists():
         try:
             await _download_binary(source_url, destination)
-        except httpx.HTTPError as exc:
+        except (HTTPError, TimeoutException) as exc:
             raise HTTPException(
                 status_code=502,
                 detail=f"Failed to download LaTeX source: {exc}",
@@ -856,7 +816,7 @@ async def get_external_preview(url: str = Query(..., min_length=1)):
                 },
             )
             upstream_response.raise_for_status()
-    except httpx.HTTPError as exc:
+    except (HTTPError, TimeoutException) as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to load external page preview: {exc}",
