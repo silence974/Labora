@@ -20,7 +20,7 @@ import { PdfPaperViewer } from './PdfPaperViewer'
 import type { ReaderAnnotation } from './PdfPaperViewer'
 import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 import { researchAgentApi } from '../api/researchAgent'
-import type { AgentStateResponse } from '../api/researchAgent'
+import type { AgentStateResponse, AgentStreamEvent } from '../api/researchAgent'
 
 interface StartDeepReadDetail {
   paperId?: string
@@ -61,6 +61,138 @@ function formatRelativeTime(value?: string) {
   if (diffMs < hour) return `${Math.floor(diffMs / minute)}m`
   if (diffMs < day) return `${Math.floor(diffMs / hour)}h`
   return `${Math.floor(diffMs / day)}d`
+}
+
+let chatMessageIdCounter = 0
+
+function createChatMessageId() {
+  chatMessageIdCounter += 1
+  return `chat-${Date.now()}-${chatMessageIdCounter}`
+}
+
+function formatJsonBlock(value: unknown) {
+  return JSON.stringify(value ?? {}, null, 2)
+}
+
+function formatPlannedAction(action: AgentStateResponse['planned_action']) {
+  if (!action) {
+    return '### Planned Action\n\nNo planned action was returned.'
+  }
+
+  return [
+    '### Planned Action',
+    `**Type:** \`${action.type}\``,
+    `**Rationale:** ${action.rationale || 'None provided.'}`,
+    '**Params:**',
+    '```json',
+    formatJsonBlock(action.params),
+    '```',
+  ].join('\n\n')
+}
+
+function formatCompactJson(value: unknown) {
+  const text = JSON.stringify(value ?? {}, null, 2)
+  return text.length > 520 ? `${text.slice(0, 520)}...` : text
+}
+
+function formatProgressDetail(event: AgentStreamEvent) {
+  if (event.action_result && Object.keys(event.action_result).length > 0) {
+    return `Result:\n${formatCompactJson(event.action_result)}`
+  }
+
+  const action = event.state?.planned_action
+  if (!action) return ''
+
+  const lines = [`Action: ${action.type}`]
+  if (action.rationale) lines.push(`Rationale: ${action.rationale}`)
+  if (action.params && Object.keys(action.params).length > 0) {
+    lines.push(`Params:\n${formatCompactJson(action.params)}`)
+  }
+  return lines.join('\n')
+}
+
+function formatProgressLabel(event: AgentStreamEvent) {
+  const node = event.node || event.event
+  if (event.event === 'status') return 'Start'
+  if (node === 'init_node') return 'Initialize'
+  if (node === 'plan_node') {
+    const actionType = event.state?.planned_action?.type
+    return actionType ? `Plan: ${actionType}` : 'Plan'
+  }
+  if (node === 'confirm_action_node') return 'Await Confirmation'
+  if (node === 'observe_node') return 'Observe'
+  if (node === 'reflect_node') {
+    return event.state?.status === 'interrupted' ? 'Await Decision' : 'Reflect'
+  }
+  if (node === 'finalize_node') return 'Finalize'
+  if (node?.startsWith('act_')) {
+    const actionType = event.action_result?.action || event.state?.planned_action?.type || node.slice(4)
+    if (actionType === 'ask_user' && event.state?.status === 'interrupted') {
+      return 'Await User Answer'
+    }
+    return `Run: ${actionType}`
+  }
+  return event.message || 'Agent Step'
+}
+
+function createProgressStep(event: AgentStreamEvent): ProgressStep | null {
+  if (event.event !== 'status' && event.event !== 'state') return null
+
+  const isWaiting = event.state?.status === 'interrupted'
+  const description = event.message || ''
+  return {
+    label: formatProgressLabel(event),
+    status: 'active',
+    description,
+    detail: formatProgressDetail(event),
+    progress: isWaiting ? undefined : 60,
+  }
+}
+
+function formatAgentPrompt(state: AgentStateResponse): {
+  content: string
+  actions?: { label: string; value: string }[]
+} {
+  if (state.status === 'completed') {
+    return { content: '### Research Completed\n\nDocument is ready.' }
+  }
+
+  if (state.interrupt_type === 'confirm_action') {
+    return {
+      content: formatPlannedAction(state.planned_action),
+      actions: [
+        { label: 'Accept', value: 'confirm' },
+        { label: 'Reject', value: 'reject' },
+      ],
+    }
+  }
+
+  if (state.interrupt_type === 'continue_decision') {
+    const gaps = state.reflection?.gaps || []
+    const gapText = gaps.length > 0
+      ? gaps.map((gap) => `- ${gap}`).join('\n')
+      : '- No major gaps reported.'
+    return {
+      content: [
+        '### Progress Review',
+        state.reflection?.summary || state.pending_prompt || 'The agent has reviewed the current progress.',
+        '#### Gaps',
+        gapText,
+        '#### Recommendation',
+        state.reflection?.recommendation || 'Continue or finalize this research session.',
+      ].join('\n\n'),
+      actions: [
+        { label: 'Continue', value: 'continue' },
+        { label: 'Finalize', value: 'done' },
+      ],
+    }
+  }
+
+  return {
+    content: state.pending_prompt
+      ? `### Agent Response\n\n${state.pending_prompt}`
+      : '### Agent Response\n\nWaiting for your response.',
+  }
 }
 
 type ReferencePreviewState =
@@ -209,9 +341,56 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   const [agentLoading, setAgentLoading] = useState(false)
   const [agentError, setAgentError] = useState<string | null>(null)
   const [agentMessages, setAgentMessages] = useState<ChatMessage[]>([])
+  const [agentProgressEvents, setAgentProgressEvents] = useState<ProgressStep[]>([])
   const [docViewMode, setDocViewMode] = useState<'source' | 'preview'>('preview')
 
-  const agentAddMessage = (msg: ChatMessage) => setAgentMessages(prev => [...prev, msg])
+  const agentAddMessage = (msg: ChatMessage) => {
+    setAgentMessages(prev => [...prev, { ...msg, id: msg.id || createChatMessageId() }])
+  }
+
+  const agentAddProgressEvent = (event: AgentStreamEvent) => {
+    const step = createProgressStep(event)
+    if (!step) return
+
+    setAgentProgressEvents(prev => {
+      const completedPrevious = prev.map((item, index) =>
+        index === prev.length - 1 && item.status === 'active'
+          ? { ...item, status: 'completed' as const, progress: 100 }
+          : item
+      )
+      return [...completedPrevious, step]
+    })
+  }
+
+  const agentCompleteProgress = (state?: AgentStateResponse) => {
+    if (state?.status !== 'completed') return
+    setAgentProgressEvents(prev => prev.map(item =>
+      item.status === 'active' ? { ...item, status: 'completed' as const, progress: 100 } : item
+    ))
+  }
+
+  const setAgentPhaseFromState = (state: AgentStateResponse) => {
+    if (state.status === 'completed') {
+      setAgentPhase('completed')
+    } else if (state.status === 'failed') {
+      setAgentPhase('failed')
+    } else if (state.status === 'interrupted') {
+      setAgentPhase('waiting_input')
+    } else {
+      setAgentPhase('running')
+    }
+  }
+
+  const handleAgentStreamEvent = (event: AgentStreamEvent) => {
+    if (event.state) {
+      setAgentState(event.state)
+      setAgentTaskId(event.state.task_id)
+    }
+    agentAddProgressEvent(event)
+    if (event.event === 'final') {
+      agentCompleteProgress(event.state)
+    }
+  }
 
   const agentStart = async () => {
     if (!agentQuestion.trim()) return
@@ -219,21 +398,21 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
     setAgentError(null)
     setAgentPhase('starting')
     setAgentMessages([])
+    setAgentProgressEvents([])
     try {
-      const result = await researchAgentApi.start({
+      const result = await researchAgentApi.startStream({
         research_question: agentQuestion,
         initial_direction: agentDirection,
-      })
+      }, handleAgentStreamEvent)
       setAgentTaskId(result.task_id)
       setAgentState(result)
-      agentAddMessage({ role: 'system', content: 'Research initialized. Document skeleton created.' })
-      agentAddMessage({ role: 'assistant', content: `**Planned Action:** ${result.planned_action?.type}\n**Rationale:** ${result.planned_action?.rationale || ''}\n**Params:** ${JSON.stringify(result.planned_action?.params, null, 2)}`, actions: [
-        { label: 'Accept', value: 'confirm' },
-        { label: 'Reject', value: 'reject' },
-      ]})
-      setAgentPhase('waiting_input')
+      const prompt = formatAgentPrompt(result)
+      agentAddMessage({ role: 'assistant', content: prompt.content, actions: prompt.actions })
+      setAgentPhaseFromState(result)
     } catch (e: unknown) {
-      setAgentError(e instanceof Error ? e.message : 'Failed to start')
+      const message = e instanceof Error ? e.message : 'Failed to start'
+      setAgentError(message)
+      agentAddMessage({ role: 'assistant', content: `### Agent Error\n\n${message}` })
       setAgentPhase('failed')
     } finally {
       setAgentLoading(false)
@@ -248,43 +427,29 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
     setAgentError(null)
     setAgentPhase('running')
     try {
-      const result = await researchAgentApi.resume(agentTaskId, { user_response: response })
+      const result = await researchAgentApi.resumeStream(agentTaskId, { user_response: response }, handleAgentStreamEvent)
       setAgentState(result)
-      if (result.action_result && Object.keys(result.action_result).length > 0) {
-        agentAddMessage({ role: 'system', content: `**Action completed:** ${JSON.stringify(result.action_result, null, 2)}` })
-      }
-      if (result.status === 'interrupted') {
-        if (result.interrupt_type === 'confirm_action') {
-          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Next action?', actions: [
-            { label: 'Accept', value: 'confirm' }, { label: 'Reject', value: 'reject' },
-          ]})
-        } else if (result.interrupt_type === 'continue_decision') {
-          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Continue?', actions: [
-            { label: 'Continue', value: 'continue' }, { label: 'Finalize', value: 'done' },
-          ]})
-        } else {
-          agentAddMessage({ role: 'assistant', content: result.pending_prompt || 'Your response?' })
-        }
-        setAgentPhase('waiting_input')
-      } else if (result.status === 'completed') {
-        agentAddMessage({ role: 'system', content: 'Research completed! Document is ready.' })
-        setAgentPhase('completed')
-      }
+      const prompt = formatAgentPrompt(result)
+      agentAddMessage({ role: 'assistant', content: prompt.content, actions: prompt.actions })
+      setAgentPhaseFromState(result)
     } catch (e: unknown) {
-      setAgentError(e instanceof Error ? e.message : 'Failed to resume')
+      const message = e instanceof Error ? e.message : 'Failed to resume'
+      setAgentError(message)
+      agentAddMessage({ role: 'assistant', content: `### Agent Error\n\n${message}` })
       setAgentPhase('failed')
     } finally {
       setAgentLoading(false)
     }
   }
 
-  const agentProgressSteps: ProgressStep[] = (agentState?.action_history || []).map((item: any, i: number) => ({
+  const agentHistoryProgressSteps: ProgressStep[] = (agentState?.action_history || []).map((item: any, i: number) => ({
     label: item.type || `Step ${i + 1}`,
     status: (i < (agentState?.iteration_count || 0) - 1) ? 'completed' as const :
             i === (agentState?.iteration_count || 0) - 1 ? 'active' as const : 'pending' as const,
     description: (item.rationale || '').slice(0, 80),
     progress: agentState?.status === 'completed' ? 100 : undefined,
   }))
+  const agentProgressSteps = agentProgressEvents.length > 0 ? agentProgressEvents : agentHistoryProgressSteps
 
   const activeReadSummary = activeReadResult
     ? readResults.find((result) => result.task_id === activeReadResult)
@@ -608,7 +773,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                         {agentState.document}
                       </pre>
                     ) : (
-                      <div className="prose prose-sm max-w-none text-sm leading-relaxed text-gray-800">
+                      <div className="agent-markdown max-w-none text-sm text-gray-800">
                         <ReactMarkdown
                           remarkPlugins={[remarkMath]}
                           rehypePlugins={[rehypeKatex]}
@@ -665,19 +830,19 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
 
           {/* Bottom Split - LLM Research Area */}
           <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
-            {agentPhase !== 'idle' && agentPhase !== 'starting' ? (
+            {agentPhase !== 'idle' ? (
               <>
                 <ResearchProgress steps={agentProgressSteps.length > 0 ? agentProgressSteps : [
                   { label: 'Initialize', status: agentLoading ? 'active' : 'pending', description: 'Setting up...', progress: agentLoading ? 30 : 0 },
                 ]} />
-                <AIChat messages={agentMessages} loading={agentLoading}
+                <AIChat messages={agentMessages} progressSteps={agentProgressSteps} loading={agentLoading}
                   onSend={agentPhase === 'waiting_input' ? agentRespond : undefined}
                   placeholder={agentPhase === 'waiting_input' ? 'Respond or click a button above...' : 'Agent is working...'} />
               </>
             ) : (
               <>
                 <ResearchProgress steps={[]} />
-                <AIChat />
+                <AIChat progressSteps={[]} />
               </>
             )}
           </div>
@@ -1357,12 +1522,143 @@ interface ProgressStep {
   label: string
   status: 'completed' | 'active' | 'pending'
   description: string
+  detail?: string
   progress?: number
 }
 
-function ResearchProgress({ steps }: { steps?: ProgressStep[] }) {
+function ProgressTimeline({
+  steps,
+  emptyText,
+  compact = false,
+  collapsible = false,
+}: {
+  steps?: ProgressStep[]
+  emptyText: string
+  compact?: boolean
+  collapsible?: boolean
+}) {
   const displaySteps: ProgressStep[] = steps || []
+  const progressKey = displaySteps.map((step) => `${step.status}:${step.label}`).join('|')
+  const defaultOpenIndex = getDefaultOpenProgressIndex(displaySteps)
+  const stepButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const [expandedStepIndexes, setExpandedStepIndexes] = useState<Set<number>>(
+    () => new Set(defaultOpenIndex >= 0 ? [defaultOpenIndex] : [])
+  )
 
+  useEffect(() => {
+    if (!collapsible) return
+    setExpandedStepIndexes(new Set(defaultOpenIndex >= 0 ? [defaultOpenIndex] : []))
+  }, [collapsible, defaultOpenIndex, progressKey])
+
+  useEffect(() => {
+    if (!collapsible || defaultOpenIndex < 0) return
+    const currentButton = stepButtonRefs.current[defaultOpenIndex]
+    if (!currentButton) return
+
+    currentButton.focus({ preventScroll: true })
+    currentButton.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [collapsible, defaultOpenIndex, progressKey])
+
+  const toggleStep = (index: number) => {
+    setExpandedStepIndexes((current) => {
+      const next = new Set(current)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
+  return (
+    <div className={`flex-1 overflow-y-auto ${compact ? 'p-4' : 'p-6'}`}>
+      {displaySteps.length === 0 ? (
+        <p className="text-xs text-academic-muted text-center py-8">{emptyText}</p>
+      ) : (
+        <div className={`relative pl-4 ${compact ? 'space-y-4 before:left-[21px]' : 'space-y-5 before:left-[23px]'} before:absolute before:inset-y-0 before:w-px before:bg-academic-border`}>
+          {displaySteps.map((step, i) => {
+            const isExpanded = !collapsible || expandedStepIndexes.has(i)
+            const titleClass = `font-medium text-xs ${step.status === 'active' ? 'text-academic-accent' : 'text-academic-text'}`
+
+            return (
+              <div key={i} className={`relative z-10 flex gap-3 ${step.status === 'completed' ? 'opacity-60' : step.status === 'pending' ? 'opacity-50' : ''}`}>
+                {step.status === 'completed' ? (
+                  <div className="w-4 h-4 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                    <i className="fa-solid fa-check text-[8px]"></i>
+                  </div>
+                ) : step.status === 'active' ? (
+                  <div className="w-4 h-4 rounded-full border-2 border-academic-accent bg-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                    <div className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-pulse"></div>
+                  </div>
+                ) : (
+                  <div className="w-4 h-4 rounded-full border-2 border-academic-border bg-white shrink-0 mt-0.5"></div>
+                )}
+                <div className="min-w-0 flex-1">
+                  {collapsible ? (
+                    <div className="grid w-full grid-cols-[minmax(0,1fr)_24px] items-start gap-2">
+                      <div className="min-w-0 pt-0.5">
+                        <span className={`${titleClass} leading-4`}>{step.label}</span>
+                        {step.status === 'active' && (
+                          <span className="ml-2 inline-flex rounded-sm border border-red-100 bg-red-50 px-1.5 py-0.5 text-[9px] text-academic-accent">In Progress</span>
+                        )}
+                      </div>
+                      <button
+                        ref={(element) => { stepButtonRefs.current[i] = element }}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center justify-self-end rounded text-academic-muted outline-none transition-colors hover:bg-academic-hover hover:text-academic-accent focus-visible:ring-2 focus-visible:ring-academic-accent/30"
+                        onClick={() => toggleStep(i)}
+                        type="button"
+                        title={isExpanded ? 'Collapse step' : 'Expand step'}
+                        aria-label={isExpanded ? 'Collapse step' : 'Expand step'}
+                      >
+                        <i className={`fa-solid fa-chevron-${isExpanded ? 'up' : 'down'} text-[10px] text-academic-muted`}></i>
+                      </button>
+                    </div>
+                  ) : (
+                    <h4 className={`${titleClass} ${step.status === 'active' ? 'flex items-center gap-2' : ''}`}>
+                      {step.label}
+                      {step.status === 'active' && (
+                        <span className="px-1.5 py-0.5 rounded-sm bg-red-50 text-[9px] border border-red-100">In Progress</span>
+                      )}
+                    </h4>
+                  )}
+                  {isExpanded && step.status === 'active' && step.progress !== undefined && (
+                    <div className="w-full bg-academic-hover h-1.5 rounded-full mt-2 overflow-hidden border border-academic-border">
+                      <div className="bg-academic-accent h-full rounded-full relative" style={{ width: `${step.progress}%` }}>
+                        <div className="absolute inset-0 bg-white/20 w-full animate-shimmer"></div>
+                      </div>
+                    </div>
+                  )}
+                  {isExpanded && step.description && (
+                    <p className="text-[10px] text-academic-muted mt-1.5">{step.description}</p>
+                  )}
+                  {isExpanded && step.detail && (
+                    <pre className={`${compact ? 'max-h-24' : 'max-h-20'} mt-2 overflow-auto whitespace-pre-wrap rounded border border-academic-border bg-white px-2 py-1.5 font-mono text-[9px] leading-4 text-academic-text/75`}>
+                      {step.detail}
+                    </pre>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function getDefaultOpenProgressIndex(steps: ProgressStep[]) {
+  const activeIndex = steps.findIndex((step) => step.status === 'active')
+  if (activeIndex >= 0) return activeIndex
+
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (steps[index].status !== 'pending') return index
+  }
+
+  return steps.length > 0 ? 0 : -1
+}
+
+function ResearchProgress({ steps }: { steps?: ProgressStep[] }) {
   return (
     <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
       <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
@@ -1372,50 +1668,17 @@ function ResearchProgress({ steps }: { steps?: ProgressStep[] }) {
         </h3>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
-        {displaySteps.length === 0 ? (
-          <p className="text-xs text-academic-muted text-center py-8">No progress yet. Start the agent to begin research.</p>
-        ) : (
-        <div className="relative pl-4 space-y-5 before:absolute before:inset-y-0 before:left-[23px] before:w-px before:bg-academic-border">
-          {displaySteps.map((step, i) => (
-            <div key={i} className={`relative z-10 flex gap-3 ${step.status === 'completed' ? 'opacity-60' : step.status === 'pending' ? 'opacity-50' : ''}`}>
-              {step.status === 'completed' ? (
-                <div className="w-4 h-4 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-                  <i className="fa-solid fa-check text-[8px]"></i>
-                </div>
-              ) : step.status === 'active' ? (
-                <div className="w-4 h-4 rounded-full border-2 border-academic-accent bg-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-                  <div className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-pulse"></div>
-                </div>
-              ) : (
-                <div className="w-4 h-4 rounded-full border-2 border-academic-border bg-white shrink-0 mt-0.5"></div>
-              )}
-              <div className={step.status === 'active' ? 'w-full pr-4' : ''}>
-                <h4 className={`font-medium text-xs ${step.status === 'active' ? 'text-academic-accent flex items-center gap-2' : 'text-academic-text'}`}>
-                  {step.label}
-                  {step.status === 'active' && (
-                    <span className="px-1.5 py-0.5 rounded-sm bg-red-50 text-[9px] border border-red-100">In Progress</span>
-                  )}
-                </h4>
-                {step.status === 'active' && step.progress !== undefined && (
-                  <div className="w-full bg-academic-hover h-1.5 rounded-full mt-2 overflow-hidden border border-academic-border">
-                    <div className="bg-academic-accent h-full rounded-full relative" style={{ width: `${step.progress}%` }}>
-                      <div className="absolute inset-0 bg-white/20 w-full animate-shimmer"></div>
-                    </div>
-                  </div>
-                )}
-                <p className="text-[10px] text-academic-muted mt-1.5">{step.description}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        )}
-      </div>
+      <ProgressTimeline
+        collapsible
+        steps={steps}
+        emptyText="No progress yet. Start the agent to begin research."
+      />
     </div>
   )
 }
 
 interface ChatMessage {
+  id?: string
   role: 'user' | 'assistant' | 'system'
   content: string
   actions?: { label: string; value: string }[]
@@ -1423,16 +1686,20 @@ interface ChatMessage {
 
 function AIChat({
   messages,
+  progressSteps,
   onSend,
   loading,
   placeholder,
 }: {
   messages?: ChatMessage[]
+  progressSteps?: ProgressStep[]
   onSend?: (msg: string) => void
   loading?: boolean
   placeholder?: string
 }) {
   const [input, setInput] = useState('')
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const chatRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1452,7 +1719,18 @@ function AIChat({
     if (e.key === 'Enter') handleSend()
   }
 
+  const handleCopy = async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedMessageId(messageId)
+      window.setTimeout(() => setCopiedMessageId(current => current === messageId ? null : current), 1200)
+    } catch {
+      setCopiedMessageId(null)
+    }
+  }
+
   const displayMessages: ChatMessage[] = messages || []
+  const displayProgressSteps: ProgressStep[] = progressSteps || []
 
   return (
     <div className="w-1/2 flex flex-col bg-white">
@@ -1462,7 +1740,14 @@ function AIChat({
           LLM Assistant
         </h3>
         <div className="flex gap-2">
-          <button className="text-academic-muted hover:text-academic-text transition-colors"><i className="fa-solid fa-clock-rotate-left text-xs"></i></button>
+          <button
+            className="text-academic-muted hover:text-academic-text transition-colors"
+            title="History"
+            aria-label="Open history"
+            onClick={() => setHistoryOpen(true)}
+          >
+            <i className="fa-solid fa-clock-rotate-left text-xs"></i>
+          </button>
           <button className="text-academic-muted hover:text-academic-text transition-colors"><i className="fa-solid fa-ellipsis-vertical text-xs"></i></button>
         </div>
       </div>
@@ -1472,23 +1757,32 @@ function AIChat({
         {displayMessages.length === 0 && !loading && (
           <p className="text-xs text-academic-muted text-center py-8">Start the agent to begin the research conversation.</p>
         )}
-        {displayMessages.map((msg, i) => (
-          <div key={i} className="flex gap-3">
-            {msg.role === 'user' ? (
-              <div className="w-6 h-6 rounded-full overflow-hidden shrink-0 border border-academic-border">
-                <img src="https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg" className="w-full h-full object-cover" alt="User" />
-              </div>
-            ) : (
-              <div className="w-6 h-6 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 font-serif font-bold text-[10px]">
-                R
-              </div>
-            )}
-            <div className={`border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs max-w-[90%] shadow-sm ${
-              msg.role === 'user' ? 'bg-academic-bg text-academic-text max-w-[85%]' :
-              msg.role === 'system' ? 'bg-amber-50 text-amber-800 max-w-[90%]' :
-              'bg-academic-hover text-academic-text space-y-2'
+        {displayMessages.map((msg, i) => {
+          const messageId = msg.id || `message-${i}`
+          const copied = copiedMessageId === messageId
+          return (
+          <div key={messageId} className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`relative border rounded-lg px-3 py-2.5 pr-9 text-xs max-w-[92%] shadow-sm ${
+              msg.role === 'user' ? 'bg-academic-bg text-academic-text max-w-[86%]' :
+              msg.role === 'system' ? 'bg-amber-50 text-amber-900 max-w-[92%]' :
+              'bg-academic-hover text-academic-text'
             }`}>
-              <div class="whitespace-pre-wrap">{msg.content}</div>
+              <button
+                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-academic-muted opacity-40 transition-colors hover:bg-white hover:text-academic-text group-hover:opacity-100 focus:opacity-100"
+                title={copied ? 'Copied' : 'Copy'}
+                aria-label="Copy message"
+                onClick={() => void handleCopy(messageId, msg.content)}
+              >
+                <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
+              </button>
+              <div className="chat-markdown">
+                <ReactMarkdown
+                  remarkPlugins={[remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                >
+                  {msg.content}
+                </ReactMarkdown>
+              </div>
               {msg.actions && msg.actions.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-academic-border flex justify-end gap-2">
                   {msg.actions.map((action, j) => (
@@ -1504,16 +1798,15 @@ function AIChat({
               )}
             </div>
           </div>
-        ))}
+        )})}
 
         {loading && (
-          <div className="flex gap-3">
-            <div className="w-6 h-6 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 font-serif font-bold text-[10px]">R</div>
-            <div className="bg-academic-hover border border-academic-border rounded-lg rounded-tl-none p-2.5 text-xs text-academic-muted">
+          <div className="flex justify-start">
+            <div className="bg-academic-hover border border-academic-border rounded-lg p-2.5 text-xs text-academic-muted">
               <div className="flex gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce"></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style="animation-delay: 0.1s"></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style="animation-delay: 0.2s"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.2s' }}></span>
               </div>
             </div>
           </div>
@@ -1543,6 +1836,194 @@ function AIChat({
           </div>
         </div>
       )}
+
+      {historyOpen && (
+        <AgentHistoryModal
+          messages={displayMessages}
+          steps={displayProgressSteps}
+          onSend={onSend}
+          loading={loading}
+          placeholder={placeholder}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+function AgentHistoryModal({
+  messages,
+  steps,
+  onSend,
+  loading,
+  placeholder,
+  onClose,
+}: {
+  messages: ChatMessage[]
+  steps: ProgressStep[]
+  onSend?: (msg: string) => void
+  loading?: boolean
+  placeholder?: string
+  onClose: () => void
+}) {
+  const [input, setInput] = useState('')
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  const handleBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.currentTarget === event.target) onClose()
+  }
+
+  const handleSend = () => {
+    const text = input.trim()
+    if (!text || !onSend) return
+    onSend(text)
+    setInput('')
+  }
+
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') handleSend()
+  }
+
+  const handleCopy = async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedMessageId(messageId)
+      window.setTimeout(() => setCopiedMessageId(current => current === messageId ? null : current), 1200)
+    } catch {
+      setCopiedMessageId(null)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-[2px]"
+      onClick={handleBackdropClick}
+    >
+      <div className="flex h-[90vh] w-[96vw] max-w-[1680px] overflow-hidden rounded-lg border border-academic-border bg-academic-panel shadow-[0_24px_80px_rgba(15,23,42,0.32)]">
+        <aside className="flex w-[32%] min-w-[260px] flex-col border-r border-academic-border bg-academic-bg/80">
+          <div className="h-12 shrink-0 border-b border-academic-border bg-academic-hover px-4 py-2">
+            <h3 className="font-serif text-sm font-bold text-academic-text">Research Progress</h3>
+            <p className="text-[10px] text-academic-muted">{steps.length} recorded steps</p>
+          </div>
+          <ProgressTimeline
+            compact
+            collapsible
+            steps={steps}
+            emptyText="No progress has been recorded yet."
+          />
+        </aside>
+
+        <section className="flex min-w-0 flex-[1.65] flex-col border-t-4 border-academic-accent bg-white shadow-[inset_12px_0_28px_rgba(15,23,42,0.04)]">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-academic-border bg-white px-5">
+            <div>
+              <h3 className="font-serif text-base font-bold text-academic-text">Conversation History</h3>
+              <p className="text-[10px] text-academic-muted">{messages.length} messages</p>
+            </div>
+            <button
+              className="flex h-8 w-8 items-center justify-center rounded-md text-academic-muted transition-colors hover:bg-academic-hover hover:text-academic-text"
+              title="Close"
+              aria-label="Close history"
+              onClick={onClose}
+            >
+              <i className="fa-solid fa-xmark text-sm"></i>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto bg-white p-6">
+            {messages.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-center text-xs text-academic-muted">
+                No conversation yet.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {messages.map((msg, i) => {
+                  const messageId = msg.id || `history-message-${i}`
+                  const copied = copiedMessageId === messageId
+                  const roleLabel =
+                    msg.role === 'user' ? 'You' :
+                    msg.role === 'system' ? 'System' :
+                    'Assistant'
+                  return (
+                    <div key={messageId} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`relative max-w-[84%] rounded-lg border px-4 py-3 pr-10 text-xs shadow-sm ${
+                        msg.role === 'user' ? 'border-academic-accent/30 bg-red-50 text-academic-text' :
+                        msg.role === 'system' ? 'border-amber-200 bg-amber-50 text-amber-900' :
+                        'border-academic-border bg-academic-hover text-academic-text'
+                      }`}>
+                        <button
+                          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded text-academic-muted opacity-55 transition-colors hover:bg-white hover:text-academic-text hover:opacity-100 focus:opacity-100"
+                          title={copied ? 'Copied' : 'Copy'}
+                          aria-label="Copy message"
+                          onClick={() => void handleCopy(messageId, msg.content)}
+                        >
+                          <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
+                        </button>
+                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-academic-muted">
+                          {roleLabel}
+                        </div>
+                        <div className="chat-markdown">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkMath]}
+                            rehypePlugins={[rehypeKatex]}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
+                        {msg.actions && msg.actions.length > 0 && (
+                          <div className="mt-3 flex justify-end gap-2 border-t border-academic-border pt-2">
+                            {msg.actions.map((action, j) => (
+                              <button
+                                key={j}
+                                className="rounded bg-academic-accent px-2.5 py-1 text-[10px] text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                                onClick={() => onSend?.(action.value)}
+                                disabled={loading || !onSend}
+                              >
+                                {action.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="shrink-0 border-t border-academic-border bg-white p-4">
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                className="w-full rounded-full border border-academic-border bg-academic-bg py-2.5 pl-4 pr-12 text-xs text-academic-text outline-none transition-colors focus:border-academic-accent disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder={placeholder || 'Ask about your research...'}
+                value={input}
+                onInput={(event) => setInput((event.target as HTMLInputElement).value)}
+                onKeyDown={handleInputKeyDown}
+                disabled={loading || !onSend}
+              />
+              <button
+                className="absolute right-1 flex h-8 w-8 items-center justify-center rounded-full bg-academic-accent text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                onClick={handleSend}
+                disabled={loading || !onSend || !input.trim()}
+                title="Send"
+                aria-label="Send message"
+              >
+                <i className="fa-solid fa-arrow-up text-[10px]"></i>
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   )
 }

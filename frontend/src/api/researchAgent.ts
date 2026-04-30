@@ -82,6 +82,63 @@ export interface RollbackRequest {
   version_index: number
 }
 
+export interface AgentStreamEvent {
+  event: 'status' | 'state' | 'final' | 'error'
+  task_id?: string
+  node?: string
+  message?: string
+  state?: AgentStateResponse
+  action_result?: Record<string, unknown>
+}
+
+type AgentStreamHandler = (event: AgentStreamEvent) => void
+
+async function readAgentStream(
+  resp: Response,
+  onEvent?: AgentStreamHandler,
+): Promise<AgentStateResponse> {
+  if (!resp.body) {
+    throw new Error('Agent stream response did not include a body')
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalState: AgentStateResponse | null = null
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    const event = JSON.parse(trimmed) as AgentStreamEvent
+    onEvent?.(event)
+    if (event.event === 'error') {
+      throw new Error(event.message || 'Agent stream failed')
+    }
+    if (event.event === 'final' && event.state) {
+      finalState = event.state
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      processLine(line)
+    }
+  }
+
+  buffer += decoder.decode()
+  processLine(buffer)
+
+  if (!finalState) {
+    throw new Error('Agent stream ended without a final state')
+  }
+  return finalState
+}
+
 // ── API Functions ──────────────────────────────────────────────────────────────────
 
 export const researchAgentApi = {
@@ -98,6 +155,22 @@ export const researchAgentApi = {
     return resp.json()
   },
 
+  async startStream(
+    request: StartRequest,
+    onEvent?: AgentStreamHandler,
+  ): Promise<AgentStateResponse> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/start/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to start agent stream: ${resp.status} ${detail}`)
+    }
+    return readAgentStream(resp, onEvent)
+  },
+
   async resume(taskId: string, request: ResumeRequest): Promise<AgentStateResponse> {
     const resp = await fetch(`${API_BASE}/api/research-agent/${taskId}/resume`, {
       method: 'POST',
@@ -109,6 +182,23 @@ export const researchAgentApi = {
       throw new Error(`Failed to resume agent: ${resp.status} ${detail}`)
     }
     return resp.json()
+  },
+
+  async resumeStream(
+    taskId: string,
+    request: ResumeRequest,
+    onEvent?: AgentStreamHandler,
+  ): Promise<AgentStateResponse> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/${taskId}/resume/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to resume agent stream: ${resp.status} ${detail}`)
+    }
+    return readAgentStream(resp, onEvent)
   },
 
   async getState(taskId: string): Promise<AgentStateResponse> {

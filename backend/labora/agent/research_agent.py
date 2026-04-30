@@ -43,6 +43,10 @@ VALID_ACTIONS = {
     "search", "skim", "deep_read", "compare",
     "trace_citation", "synthesize", "edit_document", "ask_user",
 }
+CONFIRM_RESPONSES = {"confirm", "yes", "y", "accept", "ok", "执行", "确认", "同意"}
+REPLAN_RESPONSES = {"reject", "no", "n", "拒绝", "否", "修改"}
+AUTO_CONFIRM_ACTIONS = {"search", "skim", "compare", "trace_citation", "ask_user"}
+HUMAN_CONFIRM_ACTIONS = {"deep_read", "synthesize", "edit_document"}
 
 
 # ── State ───────────────────────────────────────────────────────────────────────────
@@ -114,6 +118,32 @@ def _normalize_paper_id(paper_id: str) -> str:
     return paper_id.replace("arxiv:", "")
 
 
+def _is_blank_figure_edit(action: dict) -> bool:
+    """Blank figure placeholders are low-risk scaffolding and can run without approval."""
+    params = action.get("params", {})
+    text = json.dumps(params, ensure_ascii=False).lower()
+    has_figure = any(
+        keyword in text
+        for keyword in ("blank figure", "empty figure", "placeholder figure", "空白图", "占位图")
+    )
+    has_create_intent = any(
+        keyword in text
+        for keyword in ("create", "insert", "add", "新增", "创建", "插入", "添加")
+    )
+    return action.get("type") == "edit_document" and has_figure and has_create_intent
+
+
+def _requires_human_confirmation(action: dict) -> bool:
+    action_type = action.get("type", "")
+    if action_type in AUTO_CONFIRM_ACTIONS:
+        return False
+    if _is_blank_figure_edit(action):
+        return False
+    if action_type in HUMAN_CONFIRM_ACTIONS:
+        return True
+    return True
+
+
 # ── Nodes ───────────────────────────────────────────────────────────────────────────
 
 def init_node(state: ResearchAgentState) -> ResearchAgentState:
@@ -181,20 +211,54 @@ def plan_node(state: ResearchAgentState) -> ResearchAgentState:
         "params": data.get("params", {}),
         "rationale": data.get("rationale", ""),
     }
-    state["interrupt_type"] = "confirm_action"
-    state["status"] = "interrupted"
-    state["pending_prompt"] = (
-        f"建议动作: {action_type}\n理由: {data.get('rationale', '')}\n"
-        f"参数: {json.dumps(data.get('params', {}), ensure_ascii=False)}\n\n"
-        "确认执行此动作？(yes/no/修改)"
-    )
+    state["status"] = "running"
+    state["interrupt_type"] = ""
+    state["pending_prompt"] = ""
 
     logger.info("Plan: %s — %s", action_type, data.get("rationale", "")[:80])
     return state
 
 
+def plan_router(state: ResearchAgentState) -> str:
+    action = state.get("planned_action", {})
+    action_type = action.get("type", "search")
+    if action_type not in VALID_ACTIONS:
+        action_type = "search"
+    if _requires_human_confirmation(action):
+        return "confirm_action"
+    return action_type
+
+
+def confirm_action_node(state: ResearchAgentState) -> ResearchAgentState:
+    """Pause for human confirmation only when the planned action needs it."""
+    action = state.get("planned_action", {})
+    action_type = action.get("type", "search")
+    params = action.get("params", {})
+    rationale = action.get("rationale", "")
+
+    state["interrupt_type"] = "confirm_action"
+    state["status"] = "interrupted"
+    state["pending_prompt"] = (
+        f"建议动作: {action_type}\n理由: {rationale}\n"
+        f"参数: {json.dumps(params, ensure_ascii=False)}\n\n"
+        "确认执行此动作？(yes/no/修改)"
+    )
+    return state
+
+
 def action_router(state: ResearchAgentState) -> str:
     """Conditional edge: route to the appropriate action node."""
+    user_response = state.get("user_response", "").strip().lower()
+    if user_response and user_response not in CONFIRM_RESPONSES:
+        if user_response not in REPLAN_RESPONSES:
+            open_qs = state.get("open_questions", [])
+            guidance = f"User guidance for replanning: {state.get('user_response', '')}"
+            if guidance not in open_qs:
+                state["open_questions"] = open_qs + [guidance]
+        state["status"] = "running"
+        state["pending_prompt"] = ""
+        return "plan_node"
+
     action = state.get("planned_action", {})
     action_type = action.get("type", "search")
     if action_type not in VALID_ACTIONS:
@@ -613,8 +677,6 @@ def observe_node(state: ResearchAgentState) -> ResearchAgentState:
             open_qs.append(f"Citation trace found {len(new_ids)} related papers")
             state["open_questions"] = open_qs
 
-    # Clear action-specific fields for next iteration
-    state["action_result"] = {}
     state["iteration_count"] = state.get("iteration_count", 0) + 1
 
     return state
@@ -763,6 +825,7 @@ def create_research_agent_graph(
     # Add nodes
     workflow.add_node("init_node", init_node)
     workflow.add_node("plan_node", plan_node)
+    workflow.add_node("confirm_action_node", confirm_action_node)
     workflow.add_node("act_search", act_search)
     workflow.add_node("act_skim", act_skim)
     workflow.add_node("act_deep_read", act_deep_read)
@@ -782,8 +845,26 @@ def create_research_agent_graph(
     # Plan → action routing
     workflow.add_conditional_edges(
         "plan_node",
+        plan_router,
+        {
+            "confirm_action": "confirm_action_node",
+            "search": "act_search",
+            "skim": "act_skim",
+            "deep_read": "act_deep_read",
+            "compare": "act_compare",
+            "trace_citation": "act_trace_citation",
+            "synthesize": "act_synthesize",
+            "edit_document": "act_edit_document",
+            "ask_user": "act_ask_user",
+        },
+    )
+
+    # Confirmed plans → action routing
+    workflow.add_conditional_edges(
+        "confirm_action_node",
         action_router,
         {
+            "plan_node": "plan_node",
             "search": "act_search",
             "skim": "act_skim",
             "deep_read": "act_deep_read",
@@ -821,7 +902,7 @@ def create_research_agent_graph(
 
     return workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=["plan_node", "reflect_node"],
+        interrupt_after=["confirm_action_node", "act_ask_user", "reflect_node"],
     )
 
 
