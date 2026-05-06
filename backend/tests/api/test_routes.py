@@ -620,6 +620,56 @@ class TestLiteratureAPI:
         assert '<base href="https://github.com/jzhang38/TinyLlama">' in response.text
         assert "TinyLlama" in response.text
 
+    def test_get_external_preview_upstream_error_returns_fallback_html(self, client, monkeypatch):
+        """测试外链预览上游失败时返回可渲染的兜底 HTML"""
+
+        class FakeExternalPreviewResponse:
+            def __init__(self):
+                self.status_code = 500
+                self.request = httpx.Request("GET", "https://example.com/paper")
+
+            def raise_for_status(self):
+                response = httpx.Response(
+                    self.status_code,
+                    request=self.request,
+                    text="Internal Server Error",
+                )
+                raise httpx.HTTPStatusError(
+                    "Server error",
+                    request=self.request,
+                    response=response,
+                )
+
+        class FakeExternalPreviewClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, *args, **kwargs):
+                assert url == "https://example.com/paper"
+                return FakeExternalPreviewResponse()
+
+        monkeypatch.setattr(
+            "labora.api.routes.literature.httpx.AsyncClient",
+            FakeExternalPreviewClient,
+        )
+
+        response = client.get(
+            "/api/literature/external-preview",
+            params={"url": "https://example.com/paper"},
+        )
+
+        assert response.status_code == 502
+        assert response.headers["content-type"].startswith("text/html")
+        assert "External preview unavailable" in response.text
+        assert "HTTP 500" in response.text
+        assert "Internal Server Error" not in response.text
+
     @patch("labora.api.routes.literature.arxiv_get_paper")
     def test_download_literature(
         self,

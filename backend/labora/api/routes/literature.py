@@ -177,6 +177,43 @@ def _inject_external_preview_base(html_content: str, source_url: str) -> str:
     return f"<head>{base_tag}</head>{html_content}"
 
 
+def _build_external_preview_error_response(
+    source_url: str,
+    message: str,
+    status_code: int = 502,
+) -> Response:
+    escaped_url = html.escape(source_url, quote=True)
+    escaped_message = html.escape(message)
+    content = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>External preview unavailable</title>
+  <style>
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f8fafc; color: #334155; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    main {{ max-width: 520px; padding: 28px; text-align: center; }}
+    h1 {{ margin: 0 0 10px; color: #0f172a; font-size: 18px; }}
+    p {{ margin: 0 0 18px; line-height: 1.5; font-size: 14px; }}
+    a {{ display: inline-flex; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; color: #0f172a; background: #ffffff; text-decoration: none; font-size: 13px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>External preview unavailable</h1>
+    <p>{escaped_message}</p>
+    <a href="{escaped_url}" target="_blank" rel="noreferrer">Open in new tab</a>
+  </main>
+</body>
+</html>"""
+    return Response(
+        content=content,
+        status_code=status_code,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _build_minimal_paper(paper_id: str) -> Dict[str, Any]:
     normalized_id = _normalize_paper_id(paper_id)
     return {
@@ -811,38 +848,53 @@ async def get_external_preview(url: str = Query(..., min_length=1)):
             upstream_response = await client.get(
                 normalized_url,
                 headers={
-                    "User-Agent": "Labora/0.1 external-preview",
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 Labora/0.1"
+                    ),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
                 },
             )
             upstream_response.raise_for_status()
-    except (HTTPError, TimeoutException) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to load external page preview: {exc}",
-        ) from exc
+    except HTTPStatusError as exc:
+        return _build_external_preview_error_response(
+            normalized_url,
+            f"The external server returned HTTP {exc.response.status_code}.",
+        )
+    except (HTTPError, TimeoutException):
+        return _build_external_preview_error_response(
+            normalized_url,
+            "The external page could not be loaded in the preview.",
+        )
 
     content_type = upstream_response.headers.get("content-type", "text/html; charset=utf-8")
     cache_headers = {
         "Cache-Control": "no-store",
     }
 
-    if "text/html" in content_type.lower():
-        proxied_html = _inject_external_preview_base(
-            upstream_response.text,
-            str(upstream_response.url),
-        )
+    try:
+        if "text/html" in content_type.lower():
+            proxied_html = _inject_external_preview_base(
+                upstream_response.text,
+                str(upstream_response.url),
+            )
+            return Response(
+                content=proxied_html,
+                media_type="text/html",
+                headers=cache_headers,
+            )
+
         return Response(
-            content=proxied_html,
-            media_type="text/html",
+            content=upstream_response.content,
+            media_type=content_type.split(";")[0].strip() or "application/octet-stream",
             headers=cache_headers,
         )
-
-    return Response(
-        content=upstream_response.content,
-        media_type=content_type.split(";")[0].strip() or "application/octet-stream",
-        headers=cache_headers,
-    )
+    except HTTPError:
+        return _build_external_preview_error_response(
+            normalized_url,
+            "The external page could not be prepared for preview.",
+        )
 
 
 @router.get("/recent")
