@@ -13,9 +13,14 @@ Architecture (LangGraph StateGraph with interrupts):
 
 import json
 import logging
+import os
+import re
+import time
 from datetime import datetime, timezone
 from typing import TypedDict, Optional, Literal
 
+import httpx
+from openai import APIConnectionError, APITimeoutError
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_openai import ChatOpenAI
@@ -39,6 +44,8 @@ from labora.tools.semantic_scholar import fetch_references_sync, fetch_citations
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 15
+MAX_LLM_CONNECTION_ATTEMPTS = 3
+LLM_CONNECTION_RETRY_BASE_SECONDS = 1.5
 VALID_ACTIONS = {
     "search", "skim", "deep_read", "compare",
     "trace_citation", "synthesize", "edit_document", "ask_user",
@@ -72,6 +79,7 @@ class ResearchAgentState(TypedDict, total=False):
     planned_action: dict       # {type, params, rationale}
     action_result: dict        # Result from last action
     action_history: list[dict] # Past actions for context
+    step_events: list[dict]    # Append-only execution log for UI/history
     reflection: dict           # {summary, gaps, recommendation, should_continue, reason}
     iteration_count: int
 
@@ -102,12 +110,82 @@ def _parse_json(content: str) -> dict:
     return json.loads(text.strip())
 
 
+def _iter_exception_chain(error: Exception):
+    current: Exception | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        yield current
+        visited.add(id(current))
+        next_error = current.__cause__ or current.__context__
+        current = next_error if isinstance(next_error, Exception) else None
+
+
+def _is_llm_connection_error(error: Exception) -> bool:
+    for exc in _iter_exception_chain(error):
+        if isinstance(exc, (APIConnectionError, APITimeoutError)):
+            return True
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)):
+            return True
+        text = str(exc).lower()
+        if "connection refused" in text or "connection error" in text:
+            return True
+    return False
+
+
+def _first_proxy_env() -> tuple[str, str] | None:
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        value = os.getenv(key, "").strip()
+        if value:
+            return key, value
+    return None
+
+
+def _format_llm_connection_error(error: Exception) -> str:
+    proxy = _first_proxy_env()
+    if proxy:
+        key, value = proxy
+        return (
+            "Failed to reach OpenAI API. "
+            f"Detected proxy env {key}={value}. "
+            "If this is a local proxy, make sure it is running; otherwise unset proxy env vars and retry. "
+            f"Original error: {error}"
+        )
+
+    return (
+        "Failed to reach OpenAI API. Check outbound network access or OPENAI_API_BASE configuration. "
+        f"Original error: {error}"
+    )
+
+
 def _invoke_json(llm: ChatOpenAI, system: str, prompt: str) -> dict:
-    response = llm.invoke([
+    messages = [
         SystemMessage(content=system),
         HumanMessage(content=prompt),
-    ])
-    return _parse_json(response.content)
+    ]
+    last_error: Exception | None = None
+
+    for attempt in range(1, MAX_LLM_CONNECTION_ATTEMPTS + 1):
+        try:
+            response = llm.invoke(messages)
+            return _parse_json(response.content)
+        except Exception as error:
+            if not _is_llm_connection_error(error):
+                raise
+            last_error = error
+            if attempt >= MAX_LLM_CONNECTION_ATTEMPTS:
+                break
+            wait_seconds = LLM_CONNECTION_RETRY_BASE_SECONDS * attempt
+            logger.warning(
+                "LLM connection failed on attempt %s/%s; retrying in %.1fs: %s",
+                attempt,
+                MAX_LLM_CONNECTION_ATTEMPTS,
+                wait_seconds,
+                error,
+            )
+            time.sleep(wait_seconds)
+
+    assert last_error is not None
+    raise RuntimeError(_format_llm_connection_error(last_error)) from last_error
 
 
 def _now_iso() -> str:
@@ -116,6 +194,27 @@ def _now_iso() -> str:
 
 def _normalize_paper_id(paper_id: str) -> str:
     return paper_id.replace("arxiv:", "")
+
+
+def _append_step(
+    state: ResearchAgentState,
+    label: str,
+    description: str = "",
+    *,
+    status: Literal["completed", "active", "pending"] = "completed",
+    detail: str = "",
+    kind: str = "step",
+) -> None:
+    events = list(state.get("step_events", []))
+    events.append({
+        "label": label,
+        "description": description,
+        "status": status,
+        "detail": detail,
+        "kind": kind,
+        "timestamp": _now_iso(),
+    })
+    state["step_events"] = events
 
 
 def _is_blank_figure_edit(action: dict) -> bool:
@@ -171,9 +270,15 @@ def init_node(state: ResearchAgentState) -> ResearchAgentState:
     state["insights"] = []
     state["open_questions"] = [question] if question else []
     state["action_history"] = []
+    state["step_events"] = []
     state["iteration_count"] = 0
     state["status"] = "running"
     state["error"] = ""
+    _append_step(
+        state,
+        "Initialize",
+        "Created the initial document skeleton.",
+    )
 
     logger.info("Agent initialized for question: %s", question[:80])
     return state
@@ -181,8 +286,22 @@ def init_node(state: ResearchAgentState) -> ResearchAgentState:
 
 def plan_node(state: ResearchAgentState) -> ResearchAgentState:
     """LLM analyzes current context and decides the next action."""
+    user_response = state.pop("user_response", None)
     if state.get("error"):
-        return state
+        if not user_response:
+            return state
+
+        normalized_response = user_response.strip().lower()
+        if normalized_response not in {"continue", "yes", "y", "retry", "replan", "继续", "重试", "重新规划"}:
+            open_qs = state.get("open_questions", [])
+            guidance = f"User guidance after error: {user_response}"
+            if guidance not in open_qs:
+                state["open_questions"] = open_qs + [guidance]
+
+        state["error"] = ""
+        state["status"] = "running"
+        state["interrupt_type"] = ""
+        state["pending_prompt"] = ""
 
     # Check iteration limit
     iteration = state.get("iteration_count", 0)
@@ -193,10 +312,8 @@ def plan_node(state: ResearchAgentState) -> ResearchAgentState:
             "params": {"section": "Conclusion", "focus": "Final synthesis"},
             "rationale": "达到最大迭代次数，进行最终综合",
         }
+        _append_step(state, "Plan: synthesize", "Reached max iterations; preparing final synthesis.")
         return state
-
-    # Process user response if present
-    user_response = state.pop("user_response", None)
 
     llm = _get_llm(temperature=0)
     prompt = build_plan_prompt(state)
@@ -214,6 +331,12 @@ def plan_node(state: ResearchAgentState) -> ResearchAgentState:
     state["status"] = "running"
     state["interrupt_type"] = ""
     state["pending_prompt"] = ""
+    _append_step(
+        state,
+        f"Plan: {action_type}",
+        state["planned_action"].get("rationale", ""),
+        detail=json.dumps(state["planned_action"].get("params", {}), ensure_ascii=False, indent=2),
+    )
 
     logger.info("Plan: %s — %s", action_type, data.get("rationale", "")[:80])
     return state
@@ -242,6 +365,13 @@ def confirm_action_node(state: ResearchAgentState) -> ResearchAgentState:
         f"建议动作: {action_type}\n理由: {rationale}\n"
         f"参数: {json.dumps(params, ensure_ascii=False)}\n\n"
         "确认执行此动作？(yes/no/修改)"
+    )
+    _append_step(
+        state,
+        "Await Confirmation",
+        f"Waiting for approval to run {action_type}.",
+        status="active",
+        detail=json.dumps(params, ensure_ascii=False, indent=2),
     )
     return state
 
@@ -273,13 +403,40 @@ def act_search(state: ResearchAgentState) -> ResearchAgentState:
     action = state.get("planned_action", {})
     params = action.get("params", {})
     query = params.get("query", state.get("research_question", ""))
-    max_results = params.get("max_results", 5)
+    max_results = params.get("max_results", 20)
 
     try:
         results = arxiv_search.invoke({"query": query, "max_results": max_results})
     except Exception as e:
         logger.error("Search failed: %s", e)
         state["error"] = f"Search failed: {e}"
+        error_text = str(e)
+        retry_match = re.search(r"after\s+(\d+)\s+retries", error_text)
+        retry_detail = ""
+        if retry_match:
+            retry_count = int(retry_match.group(1))
+            retry_text = f"retry {retry_count}/{retry_count}"
+            retry_detail = json.dumps(
+                {
+                    "query": query,
+                    "max_results": max_results,
+                    "retry_attempt": retry_count,
+                    "max_retries": retry_count,
+                    "error": error_text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        else:
+            retry_text = "all retries"
+        retry_description = f"Search failed after {retry_text}: {error_text}"
+        _append_step(
+            state,
+            "Run: search arXiv",
+            retry_description,
+            status="completed",
+            detail=retry_detail,
+        )
         return state
 
     lit_map = state.get("literature_map", {})
@@ -310,6 +467,12 @@ def act_search(state: ResearchAgentState) -> ResearchAgentState:
         "result_count": new_count,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: search arXiv",
+        f"Query: {query}; found {len(results)} papers, added {new_count}.",
+        detail=json.dumps(state["action_result"], ensure_ascii=False, indent=2),
+    )
     logger.info("Search '%s': %d found, %d new", query, len(results), new_count)
     return state
 
@@ -325,6 +488,7 @@ def act_skim(state: ResearchAgentState) -> ResearchAgentState:
     except Exception as e:
         logger.error("Skim failed for %s: %s", paper_id, e)
         state["error"] = f"Skim failed for {paper_id}: {e}"
+        _append_step(state, "Run: skim paper", f"Skim failed for {paper_id}: {e}")
         return state
 
     reading_notes = state.get("reading_notes", {})
@@ -346,6 +510,12 @@ def act_skim(state: ResearchAgentState) -> ResearchAgentState:
         "paper_id": paper_id,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: skim paper",
+        f"Skimmed {paper_id}.",
+        detail=json.dumps(result, ensure_ascii=False, indent=2),
+    )
     logger.info("Skimmed: %s", paper_id)
     return state
 
@@ -368,8 +538,17 @@ def act_deep_read(state: ResearchAgentState) -> ResearchAgentState:
         sections = parse_latex_from_arxiv.invoke({"arxiv_id": paper_id})
         if sections:
             paper_text = "\n\n".join(sections.values())
+            _append_step(
+                state,
+                "Run: parse LaTeX",
+                f"Parsed LaTeX source for {paper_id}.",
+            )
     except Exception:
-        pass
+        _append_step(
+            state,
+            "Run: parse LaTeX",
+            f"Could not parse LaTeX source for {paper_id}; using abstract fallback.",
+        )
 
     try:
         result = run_deep_reading(
@@ -380,6 +559,7 @@ def act_deep_read(state: ResearchAgentState) -> ResearchAgentState:
     except Exception as e:
         logger.error("Deep read failed for %s: %s", paper_id, e)
         state["error"] = f"Deep read failed for {paper_id}: {e}"
+        _append_step(state, "Run: deep read", f"Deep read failed for {paper_id}: {e}")
         return state
 
     reading_notes = state.get("reading_notes", {})
@@ -405,6 +585,14 @@ def act_deep_read(state: ResearchAgentState) -> ResearchAgentState:
         "paper_id": paper_id,
         "rationale": action.get("rationale", ""),
     }]
+    stages = result.get("stages", {})
+    for stage_id, stage_result in stages.items():
+        _append_step(
+            state,
+            f"Run: deep read stage {stage_id}",
+            f"Completed deep reading stage {stage_id} for {paper_id}.",
+            detail=json.dumps(stage_result, ensure_ascii=False, indent=2),
+        )
     logger.info("Deep read: %s", paper_id)
     return state
 
@@ -440,6 +628,12 @@ def act_compare(state: ResearchAgentState) -> ResearchAgentState:
         "focus": focus,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: compare papers",
+        f"Compared {len(paper_ids)} papers on {focus}.",
+        detail=json.dumps(state["action_result"], ensure_ascii=False, indent=2),
+    )
     logger.info("Compared %d papers on '%s': %d insights", len(paper_ids), focus, len(new_insights))
     return state
 
@@ -474,6 +668,7 @@ def act_trace_citation(state: ResearchAgentState) -> ResearchAgentState:
     except Exception as e:
         logger.error("Citation trace failed for %s: %s", paper_id, e)
         state["error"] = f"Citation trace failed: {e}"
+        _append_step(state, "Run: trace citation", f"Citation trace failed for {paper_id}: {e}")
         return state
 
     state["action_result"] = {
@@ -488,6 +683,12 @@ def act_trace_citation(state: ResearchAgentState) -> ResearchAgentState:
         "direction": direction,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: trace citation",
+        f"Traced {direction} for {paper_id}; found {len(result_papers)} new papers.",
+        detail=json.dumps(state["action_result"], ensure_ascii=False, indent=2),
+    )
     logger.info("Citation trace %s for %s: %d new papers", direction, paper_id, len(result_papers))
     return state
 
@@ -534,6 +735,12 @@ def act_synthesize(state: ResearchAgentState) -> ResearchAgentState:
         "focus": focus,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: synthesize section",
+        f"Synthesized section: {section}.",
+        detail=json.dumps(state["action_result"], ensure_ascii=False, indent=2),
+    )
     logger.info("Synthesized section '%s': %d chars", section, len(new_content))
     return state
 
@@ -579,6 +786,12 @@ def act_edit_document(state: ResearchAgentState) -> ResearchAgentState:
         "instruction": instruction,
         "rationale": action.get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Run: edit document",
+        change_desc,
+        detail=json.dumps(state["action_result"], ensure_ascii=False, indent=2),
+    )
     logger.info("Edit document: %s — %s", edit_type, change_desc[:80])
     return state
 
@@ -610,6 +823,13 @@ def act_ask_user(state: ResearchAgentState) -> ResearchAgentState:
         "question": question_text,
         "rationale": state.get("planned_action", {}).get("rationale", ""),
     }]
+    _append_step(
+        state,
+        "Await User Answer",
+        question_text,
+        status="active",
+        detail=json.dumps({"options": options}, ensure_ascii=False, indent=2),
+    )
     logger.info("Ask user: %s", question_text[:80])
     return state
 
@@ -678,6 +898,11 @@ def observe_node(state: ResearchAgentState) -> ResearchAgentState:
             state["open_questions"] = open_qs
 
     state["iteration_count"] = state.get("iteration_count", 0) + 1
+    _append_step(
+        state,
+        "Observe",
+        f"Updated context after {action_type}.",
+    )
 
     return state
 
@@ -687,6 +912,19 @@ def observe_node(state: ResearchAgentState) -> ResearchAgentState:
 def reflect_node(state: ResearchAgentState) -> ResearchAgentState:
     """LLM evaluates progress: enough info? gaps? continue or done?"""
     if state.get("error"):
+        error = state.get("error", "")
+        state["interrupt_type"] = "error_recovery"
+        state["status"] = "interrupted"
+        state["pending_prompt"] = (
+            f"上一步执行失败:\n{error}\n\n"
+            "你可以让 agent 重试、重新规划下一步，或结束并保留当前文档。"
+        )
+        _append_step(
+            state,
+            "Await Recovery Decision",
+            error,
+            status="active",
+        )
         return state
 
     llm = _get_llm(temperature=0)
@@ -718,6 +956,13 @@ def reflect_node(state: ResearchAgentState) -> ResearchAgentState:
         f"建议: {data.get('recommendation', '')}\n\n"
         f"是否继续研究？(continue/done)"
     )
+    _append_step(
+        state,
+        "Await Decision",
+        state["reflection"].get("recommendation", "") or state["reflection"].get("summary", ""),
+        status="active",
+        detail=json.dumps(state["reflection"], ensure_ascii=False, indent=2),
+    )
 
     logger.info("Reflect: should_continue=%s, gaps=%d",
                 data.get("should_continue"), len(gaps))
@@ -731,6 +976,11 @@ def continue_router(state: ResearchAgentState) -> str:
 
     # User can override via response
     user_response = state.get("user_response", "").strip().lower()
+    if state.get("error"):
+        if user_response in ("done", "stop", "finalize", "结束", "no"):
+            return "finalize_node"
+        return "plan_node"
+
     if user_response in ("done", "stop", "finalize", "结束", "no"):
         should_continue = False
     elif user_response in ("continue", "yes", "继续", "y"):
@@ -772,6 +1022,11 @@ def finalize_node(state: ResearchAgentState) -> ResearchAgentState:
     state["current_version_index"] = version["index"]
     state["status"] = "completed"
     state["pending_prompt"] = "研究完成。文档已生成。"
+    _append_step(
+        state,
+        "Finalize",
+        "Finalized the research document.",
+    )
 
     logger.info("Agent finalized: %d versions, %d chars document",
                 len(state.get("document_versions", [])), len(document))

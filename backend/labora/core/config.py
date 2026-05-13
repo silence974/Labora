@@ -16,9 +16,17 @@ from dotenv import load_dotenv
 PDF_PREVIEW_MODES = {"auto", "compile", "remote", "disabled"}
 
 
+def get_project_root() -> Path:
+    """获取用户当前 Labora 项目目录。"""
+    configured = os.getenv("LABORA_PROJECT_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
 def get_default_data_dir() -> str:
     """获取默认数据目录"""
-    return str(Path.home() / ".config" / "labora" / "data")
+    return str(get_project_root() / ".labora")
 
 
 class Config:

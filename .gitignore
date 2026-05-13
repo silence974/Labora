@@ -68,6 +68,8 @@ desktop/resources/backend/
 .env.local
 .env.production
 .env.*.local
+.labora/
+backend/.labora/
 # 保留开发环境示例，不保留实际值
 !.env.development
 !.env.example

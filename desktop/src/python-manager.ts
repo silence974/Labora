@@ -8,6 +8,24 @@ const HEALTH_URL = `http://127.0.0.1:${BACKEND_PORT}/health`
 const MAX_RETRIES = 30
 const RETRY_INTERVAL_MS = 500
 
+function getProjectDir(): string {
+  const inlineArg = process.argv.find((arg) => arg.startsWith('--project-dir='))
+  if (inlineArg) {
+    return path.resolve(inlineArg.slice('--project-dir='.length))
+  }
+
+  const argIndex = process.argv.indexOf('--project-dir')
+  if (argIndex >= 0 && process.argv[argIndex + 1]) {
+    return path.resolve(process.argv[argIndex + 1])
+  }
+
+  if (process.env.LABORA_PROJECT_DIR) {
+    return path.resolve(process.env.LABORA_PROJECT_DIR)
+  }
+
+  return process.cwd()
+}
+
 export class PythonManager {
   private process: ChildProcess | null = null
 
@@ -29,8 +47,20 @@ export class PythonManager {
 
     console.log('[Python] Starting backend:', backendExe)
 
-    this.process = spawn(backendExe, ['--port', String(BACKEND_PORT)], {
+    const projectDir = getProjectDir()
+
+    this.process = spawn(backendExe, [
+      '--port',
+      String(BACKEND_PORT),
+      '--project-dir',
+      projectDir,
+    ], {
       stdio: 'pipe',
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        LABORA_PROJECT_DIR: projectDir,
+      },
     })
 
     this.process.stdout?.on('data', (d) =>

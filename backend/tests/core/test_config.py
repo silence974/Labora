@@ -75,12 +75,26 @@ class TestConfig:
         monkeypatch.delenv("OPENAI_API_BASE", raising=False)
         monkeypatch.delenv("LABORA_DATA_DIR", raising=False)
         monkeypatch.delenv("DB_PATH", raising=False)
+        monkeypatch.delenv("LABORA_PROJECT_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
 
         with patch("pathlib.Path.home", return_value=tmp_path):
             config = Config()
 
         assert config.openai_model == "gpt-4o-mini"
         assert config.db_path.endswith("labora.db")
+        assert config.data_dir == str(tmp_path.resolve() / ".labora")
+
+    def test_project_dir_sets_default_storage(self, monkeypatch, tmp_path):
+        """测试默认存储目录跟随用户项目目录"""
+        monkeypatch.delenv("LABORA_DATA_DIR", raising=False)
+        monkeypatch.delenv("DB_PATH", raising=False)
+        monkeypatch.setenv("LABORA_PROJECT_DIR", str(tmp_path))
+
+        config = Config()
+
+        assert config.data_dir == str(tmp_path / ".labora")
+        assert config.db_path == str(tmp_path / ".labora" / "labora.db")
 
     def test_validate(self, monkeypatch, tmp_path):
         """测试配置验证"""

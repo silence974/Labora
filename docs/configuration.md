@@ -55,6 +55,7 @@ export OPENAI_MODEL=gpt-4o-mini
 
 ```bash
 OPENAI_API_KEY=sk-xxx uv run python main.py
+uv run python main.py --project-dir /path/to/project
 ```
 
 ## 配置项说明
@@ -62,7 +63,8 @@ OPENAI_API_KEY=sk-xxx uv run python main.py
 - `openai_api_key`: OpenAI API 密钥（必需）
 - `openai_model`: 使用的模型，默认 `gpt-4o-mini`
 - `openai_api_base`: 自定义 API 端点（可选，用于代理或自建服务）
-- `data_dir`: 数据存储目录（可选，默认为 `~/.config/labora/data`）
+- `LABORA_PROJECT_DIR`: 用户项目目录（可选，默认为启动 Labora 时的当前工作目录）
+- `data_dir`: 数据存储目录（可选，默认为 `LABORA_PROJECT_DIR/.labora`）
 - `db_path`: 数据库文件路径（可选，默认为 `data_dir/labora.db`）
 
 ## 验证配置

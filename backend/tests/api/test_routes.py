@@ -232,6 +232,19 @@ class FakeAsyncClient:
 class TestLiteratureAPI:
     """测试文献搜索与下载 API"""
 
+    def test_recent_papers_initializes_empty_database(self, tmp_path):
+        """测试切到空数据库后 recent 查询会自动初始化表"""
+        library = LiteratureLibrary(
+            db_path=str(tmp_path / "literature.db"),
+            download_dir=str(tmp_path / "papers"),
+            preview_dir=str(tmp_path / "paper_previews"),
+        )
+        db_path = Path(library.db_path)
+        db_path.unlink()
+
+        assert library.list_recent_papers() == []
+        assert db_path.exists()
+
     @patch("labora.api.routes.literature._search_arxiv_paginated")
     def test_search_literature_online(self, mock_search, client, temp_literature_library):
         """测试联网搜索文献"""
@@ -772,6 +785,14 @@ class TestDeepReadAPI:
         data = response.json()
         assert "tasks" in data
         assert isinstance(data["tasks"], list)
+
+    def test_list_tasks_initializes_empty_database(self, monkeypatch, tmp_path):
+        """测试切到空数据库后列表接口会自动初始化表"""
+        from labora.api.routes import deep_read
+
+        monkeypatch.setattr(deep_read.config, "db_path", str(tmp_path / "labora.db"))
+
+        assert deep_read._list_deep_read_results() == []
 
     @patch("labora.api.routes.deep_read.run_deep_reading")
     def test_delete_task(self, mock_run, client, mock_env):

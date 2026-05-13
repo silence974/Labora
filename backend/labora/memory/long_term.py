@@ -8,7 +8,10 @@ from labora.memory.interface import ILongTermMemory
 class SQLiteMemory(ILongTermMemory):
     """基于 SQLite 的长期记忆实现"""
 
-    def __init__(self, db_path: str = "./data/labora.db"):
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            from labora.core import config
+            db_path = config.db_path
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()

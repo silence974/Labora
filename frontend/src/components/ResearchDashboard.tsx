@@ -18,9 +18,10 @@ import type { LiteratureDetail, LiteratureItem, RecentPaper } from '../api/liter
 import { PreactDocumentRenderer } from './PreactDocumentRenderer'
 import { PdfPaperViewer } from './PdfPaperViewer'
 import type { ReaderAnnotation } from './PdfPaperViewer'
+import { resolveReferenceTarget } from '../utils/literatureLinks'
 import type { LiteratureReferenceTarget } from '../utils/literatureLinks'
 import { researchAgentApi } from '../api/researchAgent'
-import type { AgentStateResponse, AgentStreamEvent } from '../api/researchAgent'
+import type { AgentChatMessage, AgentReferenceObject, AgentStateResponse, AgentStreamEvent, AgentTimelineNode, ResearchListItem, AgentTaskListItem } from '../api/researchAgent'
 
 interface StartDeepReadDetail {
   paperId?: string
@@ -70,128 +71,152 @@ function createChatMessageId() {
   return `chat-${Date.now()}-${chatMessageIdCounter}`
 }
 
-function formatJsonBlock(value: unknown) {
-  return JSON.stringify(value ?? {}, null, 2)
-}
+function AutoHideScrollArea({
+  children,
+  className = '',
+  viewportClassName = '',
+  scrollRef,
+}: {
+  children: any
+  className?: string
+  viewportClassName?: string
+  scrollRef?: { current: HTMLDivElement | null }
+}) {
+  const localRef = useRef<HTMLDivElement | null>(null)
+  const activeRef = scrollRef || localRef
+  const hideTimerRef = useRef<number | null>(null)
+  const dragRef = useRef<{ startY: number; startScrollTop: number } | null>(null)
+  const [isVisible, setIsVisible] = useState(false)
+  const [thumb, setThumb] = useState({ visible: false, top: 8, height: 56 })
 
-function formatPlannedAction(action: AgentStateResponse['planned_action']) {
-  if (!action) {
-    return '### Planned Action\n\nNo planned action was returned.'
-  }
+  const updateThumb = () => {
+    const element = activeRef.current
+    if (!element) return
 
-  return [
-    '### Planned Action',
-    `**Type:** \`${action.type}\``,
-    `**Rationale:** ${action.rationale || 'None provided.'}`,
-    '**Params:**',
-    '```json',
-    formatJsonBlock(action.params),
-    '```',
-  ].join('\n\n')
-}
-
-function formatCompactJson(value: unknown) {
-  const text = JSON.stringify(value ?? {}, null, 2)
-  return text.length > 520 ? `${text.slice(0, 520)}...` : text
-}
-
-function formatProgressDetail(event: AgentStreamEvent) {
-  if (event.action_result && Object.keys(event.action_result).length > 0) {
-    return `Result:\n${formatCompactJson(event.action_result)}`
-  }
-
-  const action = event.state?.planned_action
-  if (!action) return ''
-
-  const lines = [`Action: ${action.type}`]
-  if (action.rationale) lines.push(`Rationale: ${action.rationale}`)
-  if (action.params && Object.keys(action.params).length > 0) {
-    lines.push(`Params:\n${formatCompactJson(action.params)}`)
-  }
-  return lines.join('\n')
-}
-
-function formatProgressLabel(event: AgentStreamEvent) {
-  const node = event.node || event.event
-  if (event.event === 'status') return 'Start'
-  if (node === 'init_node') return 'Initialize'
-  if (node === 'plan_node') {
-    const actionType = event.state?.planned_action?.type
-    return actionType ? `Plan: ${actionType}` : 'Plan'
-  }
-  if (node === 'confirm_action_node') return 'Await Confirmation'
-  if (node === 'observe_node') return 'Observe'
-  if (node === 'reflect_node') {
-    return event.state?.status === 'interrupted' ? 'Await Decision' : 'Reflect'
-  }
-  if (node === 'finalize_node') return 'Finalize'
-  if (node?.startsWith('act_')) {
-    const actionType = event.action_result?.action || event.state?.planned_action?.type || node.slice(4)
-    if (actionType === 'ask_user' && event.state?.status === 'interrupted') {
-      return 'Await User Answer'
+    const maxScroll = element.scrollHeight - element.clientHeight
+    if (maxScroll <= 1) {
+      setThumb((current) => ({ ...current, visible: false }))
+      return
     }
-    return `Run: ${actionType}`
+
+    const trackPadding = 8
+    const trackHeight = Math.max(0, element.clientHeight - trackPadding * 2)
+    const thumbHeight = Math.min(56, Math.max(32, trackHeight))
+    const maxTop = Math.max(0, trackHeight - thumbHeight)
+    const top = trackPadding + (element.scrollTop / maxScroll) * maxTop
+    setThumb({ visible: true, top, height: thumbHeight })
   }
-  return event.message || 'Agent Step'
+
+  const showScrollbar = () => {
+    setIsVisible(true)
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current)
+    }
+    hideTimerRef.current = window.setTimeout(() => setIsVisible(false), 850)
+  }
+
+  const handleScroll = () => {
+    updateThumb()
+    showScrollbar()
+  }
+
+  const handleThumbPointerDown = (event: any) => {
+    const element = activeRef.current
+    if (!element || !thumb.visible) return
+
+    event.preventDefault()
+    dragRef.current = {
+      startY: event.clientY,
+      startScrollTop: element.scrollTop,
+    }
+    setIsVisible(true)
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const current = dragRef.current
+      const scrollElement = activeRef.current
+      if (!current || !scrollElement) return
+
+      const trackPadding = 8
+      const trackHeight = Math.max(0, scrollElement.clientHeight - trackPadding * 2)
+      const maxTop = Math.max(1, trackHeight - thumb.height)
+      const maxScroll = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight)
+      const deltaY = moveEvent.clientY - current.startY
+      scrollElement.scrollTop = current.startScrollTop + (deltaY / maxTop) * maxScroll
+    }
+
+    const handlePointerUp = () => {
+      dragRef.current = null
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      showScrollbar()
+    }
+
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+  }
+
+  useEffect(() => {
+    const element = activeRef.current
+    if (!element) return
+
+    const frame = window.requestAnimationFrame(updateThumb)
+    const observer = new ResizeObserver(updateThumb)
+    observer.observe(element)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer.disconnect()
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current)
+      }
+    }
+  }, [children])
+
+  return (
+    <div className={`relative ${className}`}>
+      <div
+        ref={activeRef}
+        className={`custom-scrollbar-viewport h-full overflow-y-auto ${viewportClassName}`}
+        onScroll={handleScroll}
+      >
+        {children}
+      </div>
+      {thumb.visible && (
+        <div className="pointer-events-none absolute bottom-2 right-1.5 top-2 w-1">
+          <button
+            type="button"
+            aria-hidden="true"
+            tabIndex={-1}
+            className={`pointer-events-auto absolute right-0 w-1 rounded-full bg-slate-300 transition-opacity duration-200 hover:bg-slate-400 ${
+              isVisible ? 'opacity-100' : 'opacity-0'
+            }`}
+            style={{ height: `${thumb.height}px`, transform: `translateY(${thumb.top - 8}px)` }}
+            onPointerDown={handleThumbPointerDown}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
 
-function createProgressStep(event: AgentStreamEvent): ProgressStep | null {
-  if (event.event !== 'status' && event.event !== 'state') return null
+function normalizeNodeStatus(status?: string): ProgressStep['status'] {
+  if (status === 'active' || status === 'running' || status === 'in_progress') return 'active'
+  if (status === 'pending') return 'pending'
+  return 'completed'
+}
 
-  const isWaiting = event.state?.status === 'interrupted'
-  const description = event.message || ''
+function nodeStepToProgressStep(node: AgentTimelineNode): ProgressStep | null {
+  const step = node.payload?.step
+  if (!step || step.label === 'Resume') return null
+
+  const status = normalizeNodeStatus(step.status || node.status)
   return {
-    label: formatProgressLabel(event),
-    status: 'active',
-    description,
-    detail: formatProgressDetail(event),
-    progress: isWaiting ? undefined : 60,
-  }
-}
-
-function formatAgentPrompt(state: AgentStateResponse): {
-  content: string
-  actions?: { label: string; value: string }[]
-} {
-  if (state.status === 'completed') {
-    return { content: '### Research Completed\n\nDocument is ready.' }
-  }
-
-  if (state.interrupt_type === 'confirm_action') {
-    return {
-      content: formatPlannedAction(state.planned_action),
-      actions: [
-        { label: 'Accept', value: 'confirm' },
-        { label: 'Reject', value: 'reject' },
-      ],
-    }
-  }
-
-  if (state.interrupt_type === 'continue_decision') {
-    const gaps = state.reflection?.gaps || []
-    const gapText = gaps.length > 0
-      ? gaps.map((gap) => `- ${gap}`).join('\n')
-      : '- No major gaps reported.'
-    return {
-      content: [
-        '### Progress Review',
-        state.reflection?.summary || state.pending_prompt || 'The agent has reviewed the current progress.',
-        '#### Gaps',
-        gapText,
-        '#### Recommendation',
-        state.reflection?.recommendation || 'Continue or finalize this research session.',
-      ].join('\n\n'),
-      actions: [
-        { label: 'Continue', value: 'continue' },
-        { label: 'Finalize', value: 'done' },
-      ],
-    }
-  }
-
-  return {
-    content: state.pending_prompt
-      ? `### Agent Response\n\n${state.pending_prompt}`
-      : '### Agent Response\n\nWaiting for your response.',
+    label: step.label || node.title,
+    status,
+    description: step.description || '',
+    detail: step.detail,
+    progress: typeof step.progress === 'number' ? step.progress : (status === 'active' ? undefined : 100),
+    timestamp: step.timestamp || node.created_at,
   }
 }
 
@@ -218,12 +243,299 @@ type ReferencePreviewState =
       label: string
     }
 
-export function ResearchDashboard() {
-  const [showDocDetails, setShowDocDetails] = useState(false)
-  const [activeLeftDoc, setActiveLeftDoc] = useState<'methodology' | 'litReview' | 'dataAnalysis'>('methodology')
+interface AgentSearchPaper {
+  paper_id: string
+  title: string
+  authors: string[]
+  year?: string
+  abstract?: string
+  status?: string
+}
+
+type ConversationReferenceObject = AgentReferenceObject
+
+type ActiveWorkspace =
+  | { kind: 'deepRead' }
+  | { kind: 'dataAnalysis' }
+  | { kind: 'newResearch' }
+  | { kind: 'research'; researchId: string }
+
+function normalizeAgentSearchPaper(paperId: string, metadata: unknown): AgentSearchPaper {
+  const data = metadata && typeof metadata === 'object'
+    ? metadata as Record<string, unknown>
+    : {}
+  const authors = Array.isArray(data.authors)
+    ? data.authors.map((author) => String(author))
+    : []
+
+  return {
+    paper_id: paperId,
+    title: String(data.title || paperId),
+    authors,
+    year: data.year == null ? undefined : String(data.year),
+    abstract: data.abstract == null ? undefined : String(data.abstract),
+    status: data.status == null ? undefined : String(data.status),
+  }
+}
+
+function extractAgentSearchPapers(state?: AgentStateResponse): AgentSearchPaper[] {
+  const result = state?.action_result || {}
+  if (result.action !== 'search' || !Array.isArray(result.paper_ids)) {
+    return []
+  }
+
+  return result.paper_ids
+    .map((paperId) => String(paperId).trim())
+    .filter(Boolean)
+    .map((paperId) => normalizeAgentSearchPaper(paperId, state?.literature_map?.[paperId]))
+}
+
+function hasPendingAgentAction(messages?: ChatMessage[]) {
+  if (!messages || messages.length === 0) return false
+  const latestActionIndex = messages.reduce((latest, msg, index) => (
+    msg.role === 'assistant' && msg.actions && msg.actions.length > 0 ? index : latest
+  ), -1)
+  if (latestActionIndex < 0) return false
+  return !messages.slice(latestActionIndex + 1).some((msg) => msg.role === 'user')
+}
+
+function chatMessageSemanticKey(message: ChatMessage) {
+  const references = (message.references || []).map((reference) => (
+    reference.paperId || reference.href || reference.label
+  ))
+  return JSON.stringify({
+    role: message.role,
+    content: message.content,
+    references,
+  })
+}
+
+function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  if (incoming.length === 0) return current
+
+  const incomingKeys = new Set<string>()
+  incoming.forEach((message) => {
+    if (message.id) incomingKeys.add(`id:${message.id}`)
+    incomingKeys.add(`semantic:${chatMessageSemanticKey(message)}`)
+  })
+
+  const localOnly = current.filter((message) => {
+    if (message.id && incomingKeys.has(`id:${message.id}`)) return false
+    return !incomingKeys.has(`semantic:${chatMessageSemanticKey(message)}`)
+  })
+
+  return [...incoming, ...localOnly]
+}
+
+function messageFromTimelineNode(node: AgentTimelineNode): ChatMessage | null {
+  const message = node.payload?.message
+  if (!message) return null
+  return {
+    ...message,
+    id: message.id || node.id,
+    created_at: message.created_at || node.created_at,
+  }
+}
+
+function messagesFromTimelineNodes(nodes?: AgentTimelineNode[]): ChatMessage[] {
+  return (nodes || [])
+    .map(messageFromTimelineNode)
+    .filter((message): message is ChatMessage => Boolean(message))
+}
+
+function mergeTimelineNodes(current: AgentTimelineNode[], incoming: AgentTimelineNode[]) {
+  if (incoming.length === 0) return current
+  const byId = new Map(current.map((node) => [node.id, node]))
+  incoming.forEach((node) => {
+    byId.set(node.id, node)
+  })
+  return Array.from(byId.values()).sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
+}
+
+function paperHref(paperId: string) {
+  return `https://arxiv.org/abs/${paperId}`
+}
+
+function agentSearchPaperToReference(paper: AgentSearchPaper): ConversationReferenceObject {
+  return {
+    kind: 'paper',
+    label: formatPaperDisplayTitle(paper.title),
+    href: paperHref(paper.paper_id),
+    paperId: paper.paper_id,
+    title: paper.title,
+    authors: paper.authors,
+    year: paper.year,
+    abstract: paper.abstract,
+  }
+}
+
+function literaturePaperToReference(paper: LiteratureItem | RecentPaper | LiteratureDetail): ConversationReferenceObject {
+  return {
+    kind: 'paper',
+    label: formatPaperDisplayTitle(paper.title),
+    href: paper.url || paper.source_url || paperHref(paper.paper_id),
+    paperId: paper.paper_id,
+    title: paper.title,
+    authors: paper.authors,
+    year: paper.year,
+    abstract: paper.abstract,
+  }
+}
+
+function relatedPaperToReference(paper: RelatedPaper): ConversationReferenceObject {
+  return {
+    kind: 'paper',
+    label: formatPaperDisplayTitle(paper.title),
+    href: paperHref(paper.arxiv_id),
+    paperId: paper.arxiv_id,
+    title: paper.title,
+    authors: paper.authors || [],
+    year: paper.year ?? undefined,
+  }
+}
+
+function referenceTargetToObject(target: LiteratureReferenceTarget): ConversationReferenceObject {
+  return {
+    kind: target.isArxiv ? 'paper' : 'link',
+    label: target.label || target.href,
+    href: target.href,
+    paperId: target.paperId,
+    title: target.label,
+  }
+}
+
+function referenceToTarget(reference: ConversationReferenceObject): LiteratureReferenceTarget {
+  const resolved = resolveReferenceTarget(reference.href, reference.label)
+  if (resolved) return resolved
+
+  return {
+    label: reference.label,
+    href: reference.href,
+    isArxiv: reference.kind === 'paper',
+    paperId: reference.paperId,
+  }
+}
+
+function addReferenceToConversation(reference: ConversationReferenceObject) {
+  window.dispatchEvent(new CustomEvent<ConversationReferenceObject>('addReferenceToConversation', {
+    detail: reference,
+  }))
+}
+
+function previewReferenceObject(reference: ConversationReferenceObject) {
+  window.dispatchEvent(new CustomEvent<ConversationReferenceObject>('previewReferenceObject', {
+    detail: reference,
+  }))
+}
+
+function getDeepReadStatusMeta(status?: DeepReadTask['status'], progress = 0) {
+  if (status === 'completed') {
+    return {
+      text: '完成',
+      icon: 'fa-check',
+      chipClass: 'bg-green-100 text-green-700',
+      barClass: 'bg-green-500',
+      value: 100,
+    }
+  }
+  if (status === 'failed') {
+    return {
+      text: '失败',
+      icon: 'fa-triangle-exclamation',
+      chipClass: 'bg-red-100 text-red-700',
+      barClass: 'bg-red-500',
+      value: Math.max(progress, 100),
+    }
+  }
+  if (status === 'running') {
+    return {
+      text: `${progress}%`,
+      icon: 'fa-spinner fa-spin',
+      chipClass: 'bg-yellow-100 text-yellow-700',
+      barClass: 'bg-academic-accent',
+      value: progress,
+    }
+  }
+  return {
+    text: '等待',
+    icon: 'fa-clock',
+    chipClass: 'bg-academic-border text-academic-muted',
+    barClass: 'bg-academic-muted',
+    value: progress,
+  }
+}
+
+function DeepReadProgressBar({
+  status,
+  progress,
+  compact = false,
+  inverted = false,
+}: {
+  status?: DeepReadTask['status']
+  progress: number
+  compact?: boolean
+  inverted?: boolean
+}) {
+  const meta = getDeepReadStatusMeta(status, progress)
+  const value = Math.min(100, Math.max(0, meta.value))
 
   return (
-    <div className="w-full h-screen bg-academic-bg flex flex-col overflow-hidden relative">
+    <div className={compact ? 'mt-1' : 'mt-2'}>
+      <div className={`h-1.5 overflow-hidden rounded-full ${inverted ? 'bg-white/30' : 'bg-white border border-academic-border'}`}>
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${inverted ? 'bg-white' : meta.barClass}`}
+          style={{ width: `${value}%` }}
+        />
+      </div>
+      {!compact && (
+        <div className={`mt-1 flex items-center justify-between text-[10px] ${inverted ? 'text-white/80' : 'text-academic-muted'}`}>
+          <span className="inline-flex items-center gap-1">
+            <i className={`fa-solid ${meta.icon}`}></i>
+            {meta.text}
+          </span>
+          <span>Stage {status === 'completed' ? 3 : Math.min(3, Math.max(0, Math.ceil(value / 34)))}/3</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function ResearchDashboard() {
+  const [showDocDetails, setShowDocDetails] = useState(false)
+  const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>({ kind: 'newResearch' })
+  const [researches, setResearches] = useState<ResearchListItem[]>([])
+  const [agentSearchPapers, setAgentSearchPapers] = useState<AgentSearchPaper[]>([])
+  const [showAgentSearchPapers, setShowAgentSearchPapers] = useState(false)
+
+  const refreshResearches = async () => {
+    try {
+      const response = await researchAgentApi.listResearches()
+      setResearches(response.researches)
+      setActiveWorkspace((current) => {
+        if (current.kind !== 'newResearch') return current
+        const latest = response.researches[0]
+        return latest ? { kind: 'research', researchId: latest.research_id } : current
+      })
+    } catch (error) {
+      console.error('Failed to load researches:', error)
+    }
+  }
+
+  useEffect(() => {
+    void refreshResearches()
+  }, [])
+
+  const activeResearchId = activeWorkspace.kind === 'research' ? activeWorkspace.researchId : null
+  const sidebarItemClass = (active: boolean) => (
+    `w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
+      active
+        ? 'bg-academic-hover border border-academic-border text-academic-accent'
+        : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
+    }`
+  )
+
+  return (
+    <div className="w-full h-dvh bg-academic-bg flex flex-col overflow-hidden relative">
 
       {/* Header */}
       <header className="bg-academic-panel border-b border-academic-border h-12 flex items-center justify-between px-5 shrink-0 shadow-sm z-10">
@@ -240,55 +552,56 @@ export function ResearchDashboard() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 flex overflow-hidden">
+      <main className="min-h-0 flex-1 flex overflow-hidden">
 
-        <div className="flex-1 min-w-0 flex overflow-hidden">
+        <div className="min-h-0 flex-1 min-w-0 flex overflow-hidden">
           {/* Leftmost Sidebar */}
-          <div className="relative w-12 shrink-0">
-            <aside className="absolute inset-y-0 left-0 w-12 overflow-hidden bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 z-30 shadow-sm transition-[width,box-shadow] duration-200 ease-out hover:w-40 hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)] group">
-              <div className="mb-6 w-full px-2">
-                <button className="w-full h-10 rounded-lg flex items-center pl-3 text-academic-muted hover:bg-academic-hover hover:text-academic-accent transition-colors relative group/btn">
-                  <i className="fa-solid fa-file-circle-plus"></i>
-                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none">New Doc</span>
-                </button>
-              </div>
-
+          <div className="relative z-40 w-12 shrink-0">
+            <aside className="absolute inset-y-0 left-0 z-40 w-12 overflow-hidden bg-academic-panel border-r border-academic-border flex flex-col items-center py-4 shadow-sm transition-[width,box-shadow] duration-200 ease-out hover:w-40 hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)] group">
               <div className="flex-1 w-full flex flex-col gap-2 px-2 overflow-y-auto">
                 <div
-                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                    activeLeftDoc === 'methodology'
-                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                  }`}
-                  onClick={() => setActiveLeftDoc('methodology')}
-                >
-                  <i className="fa-solid fa-file-lines"></i>
-                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Methodology...</span>
-                </div>
-
-                <div
-                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                    activeLeftDoc === 'litReview'
-                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                  }`}
-                  onClick={() => setActiveLeftDoc('litReview')}
+                  className={sidebarItemClass(activeWorkspace.kind === 'deepRead')}
+                  onClick={() => setActiveWorkspace({ kind: 'deepRead' })}
                 >
                   <i className="fa-regular fa-file-pdf"></i>
-                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Lit Review</span>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Deep Read</span>
                 </div>
 
                 <div
-                  className={`w-full h-10 rounded-lg flex items-center pl-3 cursor-pointer relative group/item transition-colors ${
-                    activeLeftDoc === 'dataAnalysis'
-                      ? 'bg-academic-hover border border-academic-border text-academic-accent'
-                      : 'text-academic-muted hover:bg-academic-hover hover:text-academic-text'
-                  }`}
-                  onClick={() => setActiveLeftDoc('dataAnalysis')}
+                  className={sidebarItemClass(activeWorkspace.kind === 'dataAnalysis')}
+                  onClick={() => setActiveWorkspace({ kind: 'dataAnalysis' })}
                 >
                   <i className="fa-regular fa-file-word"></i>
                   <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">Data Analysis</span>
                 </div>
+
+                <div className="my-2 h-px w-8 self-center bg-academic-border group-hover:w-32 transition-[width]"></div>
+
+                <div
+                  className={sidebarItemClass(activeWorkspace.kind === 'newResearch')}
+                  onClick={() => {
+                    setActiveWorkspace({ kind: 'newResearch' })
+                    window.dispatchEvent(new Event('newResearchSession'))
+                  }}
+                >
+                  <i className="fa-solid fa-file-circle-plus"></i>
+                  <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">New Research</span>
+                </div>
+
+                <div className="my-2 h-px w-8 self-center bg-academic-border group-hover:w-32 transition-[width]"></div>
+
+                {researches.map((research) => (
+                  <div
+                    key={research.research_id}
+                    className={sidebarItemClass(activeResearchId === research.research_id)}
+                    onClick={() => setActiveWorkspace({ kind: 'research', researchId: research.research_id })}
+                  >
+                    <i className="fa-solid fa-file-lines"></i>
+                    <span className="absolute left-10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap text-sm font-medium text-academic-text pointer-events-none truncate w-28">
+                      {research.title}
+                    </span>
+                  </div>
+                ))}
               </div>
 
               <div className="mt-auto w-full px-2 pt-4 border-t border-academic-border">
@@ -304,24 +617,49 @@ export function ResearchDashboard() {
           <LeftWorkspace
             showDocDetails={showDocDetails}
             onCloseDetails={() => setShowDocDetails(false)}
-            activeLeftDoc={activeLeftDoc}
-            setActiveLeftDoc={setActiveLeftDoc}
+            activeWorkspace={activeWorkspace}
+            setActiveWorkspace={setActiveWorkspace}
+            activeResearch={activeResearchId ? researches.find((research) => research.research_id === activeResearchId) || null : null}
+            onResearchesChanged={refreshResearches}
+            onAgentSearchPapers={setAgentSearchPapers}
+            onShowAgentSearchPapers={() => setShowAgentSearchPapers(true)}
+            hasAgentSearchPapers={agentSearchPapers.length > 0}
           />
         </div>
 
         {/* Right Workspace */}
-        <RightWorkspace />
+        <RightWorkspace
+          agentSearchPapers={agentSearchPapers}
+          showAgentSearchPapers={showAgentSearchPapers}
+          onShowAgentSearchPapers={() => setShowAgentSearchPapers(true)}
+          onHideAgentSearchPapers={() => setShowAgentSearchPapers(false)}
+        />
 
       </main>
     </div>
   )
 }
 
-function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiveLeftDoc }: {
+function LeftWorkspace({
+  showDocDetails,
+  onCloseDetails,
+  activeWorkspace,
+  setActiveWorkspace,
+  activeResearch,
+  onResearchesChanged,
+  onAgentSearchPapers,
+  onShowAgentSearchPapers,
+  hasAgentSearchPapers,
+}: {
   showDocDetails: boolean
   onCloseDetails: () => void
-  activeLeftDoc: 'methodology' | 'litReview' | 'dataAnalysis'
-  setActiveLeftDoc: (doc: 'methodology' | 'litReview' | 'dataAnalysis') => void
+  activeWorkspace: ActiveWorkspace
+  setActiveWorkspace: (workspace: ActiveWorkspace) => void
+  activeResearch: ResearchListItem | null
+  onResearchesChanged: () => void | Promise<void>
+  onAgentSearchPapers: (papers: AgentSearchPaper[]) => void
+  onShowAgentSearchPapers: () => void
+  hasAgentSearchPapers: boolean
 }) {
   const [deepReadProgress, setDeepReadProgress] = useState(0)
   const [deepReadStage, setDeepReadStage] = useState(0)
@@ -331,6 +669,8 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   const [activeReadResult, setActiveReadResult] = useState<string | null>(null)
   const [currentStages, setCurrentStages] = useState<DeepReadStages>({})
   const [readResultSearch, setReadResultSearch] = useState('')
+  const activeReadResultRef = useRef<string | null>(null)
+  const activeDeepReadPollsRef = useRef<Set<string>>(new Set())
 
   // Agent state
   const [agentPhase, setAgentPhase] = useState<'idle' | 'starting' | 'running' | 'waiting_input' | 'completed' | 'failed'>('idle')
@@ -340,41 +680,26 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   const [agentState, setAgentState] = useState<AgentStateResponse | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
   const [agentError, setAgentError] = useState<string | null>(null)
+  const [researchSessions, setResearchSessions] = useState<AgentTaskListItem[]>([])
+  const [agentTimelineNodes, setAgentTimelineNodes] = useState<AgentTimelineNode[]>([])
   const [agentMessages, setAgentMessages] = useState<ChatMessage[]>([])
-  const [agentProgressEvents, setAgentProgressEvents] = useState<ProgressStep[]>([])
+  const [pendingAgentReferences, setPendingAgentReferences] = useState<ConversationReferenceObject[]>([])
   const [docViewMode, setDocViewMode] = useState<'source' | 'preview'>('preview')
+  const [isAgentChatExpanded, setIsAgentChatExpanded] = useState(false)
+  const activeResearchId = activeWorkspace.kind === 'research' ? activeWorkspace.researchId : null
+
+  useEffect(() => {
+    activeReadResultRef.current = activeReadResult
+  }, [activeReadResult])
 
   const agentAddMessage = (msg: ChatMessage) => {
     setAgentMessages(prev => [...prev, { ...msg, id: msg.id || createChatMessageId() }])
   }
 
-  const agentAddProgressEvent = (event: AgentStreamEvent) => {
-    const step = createProgressStep(event)
-    if (!step) return
-
-    setAgentProgressEvents(prev => {
-      const completedPrevious = prev.map((item, index) =>
-        index === prev.length - 1 && item.status === 'active'
-          ? { ...item, status: 'completed' as const, progress: 100 }
-          : item
-      )
-      return [...completedPrevious, step]
-    })
-  }
-
-  const agentCompleteProgress = (state?: AgentStateResponse) => {
-    if (state?.status !== 'completed') return
-    setAgentProgressEvents(prev => prev.map(item =>
-      item.status === 'active' ? { ...item, status: 'completed' as const, progress: 100 } : item
-    ))
-  }
-
-  const setAgentPhaseFromState = (state: AgentStateResponse) => {
+  const setAgentPhaseFromState = (state: AgentStateResponse, messages: ChatMessage[] = messagesFromTimelineNodes(state.nodes)) => {
     if (state.status === 'completed') {
       setAgentPhase('completed')
-    } else if (state.status === 'failed') {
-      setAgentPhase('failed')
-    } else if (state.status === 'interrupted') {
+    } else if (state.status === 'interrupted' || state.status === 'failed' || hasPendingAgentAction(messages)) {
       setAgentPhase('waiting_input')
     } else {
       setAgentPhase('running')
@@ -382,13 +707,31 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   }
 
   const handleAgentStreamEvent = (event: AgentStreamEvent) => {
+    if (event.task_id) {
+      setAgentTaskId(event.task_id)
+    }
+    if (event.research_id) {
+      setActiveWorkspace({ kind: 'research', researchId: event.research_id })
+    }
     if (event.state) {
       setAgentState(event.state)
       setAgentTaskId(event.state.task_id)
+      if (event.state.research_id) {
+        setActiveWorkspace({ kind: 'research', researchId: event.state.research_id })
+      }
+      setAgentTimelineNodes(event.state.nodes || [])
+      const searchPapers = extractAgentSearchPapers(event.state)
+      if (searchPapers.length > 0) {
+        onAgentSearchPapers(searchPapers)
+      }
+      const nodeMessages = messagesFromTimelineNodes(event.state.nodes)
+      if (nodeMessages.length) {
+        setAgentMessages((current) => mergeChatMessages(current, nodeMessages))
+      }
+      setAgentPhaseFromState(event.state, nodeMessages)
     }
-    agentAddProgressEvent(event)
-    if (event.event === 'final') {
-      agentCompleteProgress(event.state)
+    if (event.event === 'node' && typeof event.node === 'object') {
+      setAgentTimelineNodes((current) => mergeTimelineNodes(current, [event.node as AgentTimelineNode]))
     }
   }
 
@@ -397,59 +740,157 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
     setAgentLoading(true)
     setAgentError(null)
     setAgentPhase('starting')
+    setAgentTimelineNodes([])
     setAgentMessages([])
-    setAgentProgressEvents([])
     try {
       const result = await researchAgentApi.startStream({
         research_question: agentQuestion,
         initial_direction: agentDirection,
+        research_id: activeResearchId || undefined,
       }, handleAgentStreamEvent)
       setAgentTaskId(result.task_id)
       setAgentState(result)
-      const prompt = formatAgentPrompt(result)
-      agentAddMessage({ role: 'assistant', content: prompt.content, actions: prompt.actions })
-      setAgentPhaseFromState(result)
+      if (result.research_id) {
+        setActiveWorkspace({ kind: 'research', researchId: result.research_id })
+      }
+      setAgentTimelineNodes(result.nodes || [])
+      const nodeMessages = messagesFromTimelineNodes(result.nodes)
+      setAgentMessages(nodeMessages)
+      setAgentPhaseFromState(result, nodeMessages)
+      await onResearchesChanged()
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : 'Failed to start'
       setAgentError(message)
       agentAddMessage({ role: 'assistant', content: `### Agent Error\n\n${message}` })
+      if (agentTaskId) {
+        try {
+          const recoveredState = await researchAgentApi.getState(agentTaskId)
+          setAgentState(recoveredState)
+          setAgentTimelineNodes(recoveredState.nodes || [])
+          const nodeMessages = messagesFromTimelineNodes(recoveredState.nodes)
+          setAgentMessages((current) => mergeChatMessages(current, nodeMessages))
+          setAgentPhaseFromState(recoveredState, nodeMessages)
+          return
+        } catch {
+          // fall back to failed phase below
+        }
+      }
       setAgentPhase('failed')
     } finally {
       setAgentLoading(false)
     }
   }
 
-  const agentRespond = async (response: string) => {
+  const agentRespond = async (
+    response: string,
+    references: ConversationReferenceObject[] = pendingAgentReferences,
+  ) => {
     if (!agentTaskId) return
-    const labelMap: Record<string, string> = { confirm: 'Accept this action', done: 'Finalize and finish', continue: 'Continue research', reject: 'Reject this action' }
-    agentAddMessage({ role: 'user', content: labelMap[response] || response })
+    const userResponse = response || (references.length > 0 ? '请参考已附加的可引用对象' : '')
+    const labelMap: Record<string, string> = { confirm: 'Accept this action', done: 'Finalize and finish', continue: 'Continue research', retry: 'Retry last step', reject: 'Reject this action', replan: 'Replan next step' }
+    agentAddMessage({
+      role: 'user',
+      content: labelMap[userResponse] || userResponse,
+      references,
+    })
+    setPendingAgentReferences([])
     setAgentLoading(true)
     setAgentError(null)
     setAgentPhase('running')
     try {
-      const result = await researchAgentApi.resumeStream(agentTaskId, { user_response: response }, handleAgentStreamEvent)
+      const result = await researchAgentApi.resumeStream(agentTaskId, {
+        user_response: userResponse,
+        references,
+      }, handleAgentStreamEvent)
       setAgentState(result)
-      const prompt = formatAgentPrompt(result)
-      agentAddMessage({ role: 'assistant', content: prompt.content, actions: prompt.actions })
-      setAgentPhaseFromState(result)
+      setAgentTimelineNodes(result.nodes || [])
+      const nodeMessages = messagesFromTimelineNodes(result.nodes)
+      setAgentMessages((current) => mergeChatMessages(current, nodeMessages))
+      setAgentPhaseFromState(result, nodeMessages)
+      await onResearchesChanged()
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : 'Failed to resume'
       setAgentError(message)
       agentAddMessage({ role: 'assistant', content: `### Agent Error\n\n${message}` })
-      setAgentPhase('failed')
+      try {
+        const recoveredState = await researchAgentApi.getState(agentTaskId)
+        setAgentState(recoveredState)
+        setAgentTimelineNodes(recoveredState.nodes || [])
+        const nodeMessages = messagesFromTimelineNodes(recoveredState.nodes)
+        setAgentMessages((current) => mergeChatMessages(current, nodeMessages))
+        setAgentPhaseFromState(recoveredState, nodeMessages)
+      } catch {
+        setAgentPhase('failed')
+      }
     } finally {
       setAgentLoading(false)
     }
   }
 
-  const agentHistoryProgressSteps: ProgressStep[] = (agentState?.action_history || []).map((item: any, i: number) => ({
-    label: item.type || `Step ${i + 1}`,
-    status: (i < (agentState?.iteration_count || 0) - 1) ? 'completed' as const :
-            i === (agentState?.iteration_count || 0) - 1 ? 'active' as const : 'pending' as const,
-    description: (item.rationale || '').slice(0, 80),
-    progress: agentState?.status === 'completed' ? 100 : undefined,
-  }))
-  const agentProgressSteps = agentProgressEvents.length > 0 ? agentProgressEvents : agentHistoryProgressSteps
+  const resetAgentForNewSession = () => {
+    setAgentPhase('starting')
+    setAgentQuestion('')
+    setAgentDirection('')
+    setAgentTaskId(null)
+    setAgentState(null)
+    setAgentLoading(false)
+    setAgentError(null)
+    setAgentTimelineNodes([])
+    setAgentMessages([])
+    setPendingAgentReferences([])
+    setIsAgentChatExpanded(false)
+    onAgentSearchPapers([])
+  }
+
+  const loadAgentSession = async (session: AgentTaskListItem) => {
+    const state = await researchAgentApi.getState(session.task_id)
+    setAgentTaskId(state.task_id)
+    setAgentState(state)
+    setAgentQuestion(state.research_question || session.research_question || '')
+    setAgentDirection(state.initial_direction || session.initial_direction || '')
+    setAgentTimelineNodes(state.nodes || [])
+    const nodeMessages = messagesFromTimelineNodes(state.nodes)
+    setAgentMessages(nodeMessages)
+    setAgentLoading(false)
+    const searchPapers = extractAgentSearchPapers(state)
+    if (searchPapers.length > 0) {
+      onAgentSearchPapers(searchPapers)
+    }
+    setAgentPhaseFromState(state, nodeMessages)
+  }
+
+  const startNewSessionInCurrentResearch = () => {
+    resetAgentForNewSession()
+    setAgentQuestion(activeResearch?.research_question || '')
+  }
+
+  const reloadCurrentResearch = async () => {
+    await onResearchesChanged()
+    if (!activeResearchId) return
+    const response = await researchAgentApi.listResearchSessions(activeResearchId)
+    setResearchSessions(response.sessions)
+    const latest = response.sessions[0]
+    if (!latest) {
+      resetAgentForNewSession()
+      setAgentQuestion(activeResearch?.research_question || '')
+      return
+    }
+    await loadAgentSession(latest)
+  }
+
+  const clearCurrentSession = async () => {
+    if (!agentTaskId) return
+    await researchAgentApi.clearSession(agentTaskId)
+    await reloadCurrentResearch()
+  }
+
+  const deleteCurrentSession = async () => {
+    if (!agentTaskId) return
+    await researchAgentApi.deleteSession(agentTaskId)
+    await reloadCurrentResearch()
+  }
+
+  const canSendAgentCommand = Boolean(agentTaskId) && (agentPhase === 'waiting_input' || agentPhase === 'failed')
 
   const activeReadSummary = activeReadResult
     ? readResults.find((result) => result.task_id === activeReadResult)
@@ -490,8 +931,65 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
     }))
   }
 
+  const pollReadResult = async (summary: DeepReadTask) => {
+    if (activeDeepReadPollsRef.current.has(summary.task_id)) return
+    activeDeepReadPollsRef.current.add(summary.task_id)
+
+    try {
+      const result = await deepReadApi.pollUntilComplete(summary.task_id, (poll) => {
+        const updatedAt = new Date().toISOString()
+        if (activeReadResultRef.current === summary.task_id) {
+          setDeepReadProgress(poll.progress)
+          setDeepReadStage(poll.currentStage)
+          setCurrentStages(poll.stages)
+        }
+        upsertReadResult({
+          task_id: summary.task_id,
+          paper_id: summary.paper_id,
+          paper_title: summary.paper_title,
+          status: poll.status,
+          progress: poll.progress,
+          current_stage: poll.currentStage,
+          stages: poll.stages,
+          error: summary.error,
+          created_at: summary.created_at,
+          updated_at: updatedAt,
+        })
+      })
+
+      const completed: DeepReadTask = {
+        task_id: summary.task_id,
+        paper_id: result.paper_id || summary.paper_id,
+        paper_title: result.paper_title || summary.paper_title,
+        status: 'completed',
+        progress: 100,
+        current_stage: result.current_stage,
+        stages: result.stages,
+        created_at: summary.created_at,
+        updated_at: new Date().toISOString(),
+      }
+      if (activeReadResultRef.current === summary.task_id) {
+        setDeepReadProgress(100)
+        setDeepReadStage(result.current_stage)
+        setCurrentStages(result.stages)
+      }
+      upsertReadResult(completed)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Deep read failed'
+      upsertReadResult({
+        ...summary,
+        status: 'failed',
+        error: message,
+        updated_at: new Date().toISOString(),
+      })
+      console.error('Deep read polling failed:', error)
+    } finally {
+      activeDeepReadPollsRef.current.delete(summary.task_id)
+    }
+  }
+
   const openReadResult = async (summary: DeepReadTask) => {
-    setActiveLeftDoc('litReview')
+    setActiveWorkspace({ kind: 'deepRead' })
     setOpenReadResults((previous) =>
       previous.includes(summary.task_id) ? previous : [...previous, summary.task_id]
     )
@@ -502,6 +1000,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
     upsertReadResult(summary)
 
     if (summary.status === 'running' || summary.status === 'pending') {
+      void pollReadResult(summary)
       return
     }
 
@@ -548,6 +1047,101 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
   useEffect(() => {
     let cancelled = false
 
+    const loadResearchSession = async () => {
+      if (!activeResearchId) {
+        setResearchSessions([])
+        resetAgentForNewSession()
+        return
+      }
+
+      try {
+        const response = await researchAgentApi.listResearchSessions(activeResearchId)
+        if (cancelled) return
+        setResearchSessions(response.sessions)
+        const latest = response.sessions[0]
+        if (!latest) {
+          if (!cancelled) {
+            resetAgentForNewSession()
+            setAgentQuestion(activeResearch?.research_question || '')
+            setAgentState(activeResearch?.document ? {
+              task_id: '',
+              research_id: activeResearchId,
+              status: 'completed',
+              research_question: activeResearch.research_question || '',
+              initial_direction: '',
+              document: activeResearch.document || '',
+              document_versions: [],
+              current_version_index: 0,
+              literature_map: {},
+              reading_notes: {},
+              insights: [],
+              open_questions: [],
+              iteration_count: 0,
+              action_history: [],
+              nodes: [],
+            } : null)
+          }
+          return
+        }
+
+        await loadAgentSession(latest)
+      } catch (error) {
+        console.error('Failed to load agent history:', error)
+      }
+    }
+
+    void loadResearchSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeResearchId])
+
+  useEffect(() => {
+    const handleNewResearchSession = () => resetAgentForNewSession()
+    window.addEventListener('newResearchSession', handleNewResearchSession)
+    return () => {
+      window.removeEventListener('newResearchSession', handleNewResearchSession)
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleAddReference = (event: Event) => {
+      const reference = (event as CustomEvent<ConversationReferenceObject>).detail
+      if (!reference) return
+      setPendingAgentReferences((current) => {
+        const key = reference.paperId || reference.href
+        if (current.some((item) => (item.paperId || item.href) === key)) {
+          return current
+        }
+        return [...current, reference]
+      })
+    }
+
+    const handleAddPaper = (event: Event) => {
+      const paper = (event as CustomEvent<AgentSearchPaper>).detail
+      if (!paper) return
+      addReferenceToConversation(agentSearchPaperToReference(paper))
+    }
+
+    window.addEventListener('addReferenceToConversation', handleAddReference)
+    window.addEventListener('addAgentPaperToConversation', handleAddPaper)
+    return () => {
+      window.removeEventListener('addReferenceToConversation', handleAddReference)
+      window.removeEventListener('addAgentPaperToConversation', handleAddPaper)
+    }
+  }, [agentTaskId, agentLoading])
+
+  const removePendingAgentReference = (reference: ConversationReferenceObject) => {
+    const key = reference.paperId || reference.href
+    setPendingAgentReferences((current) =>
+      current.filter((item) => (item.paperId || item.href) !== key)
+    )
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
     const loadReadResults = async () => {
       try {
         const response = await deepReadApi.listTasks()
@@ -560,6 +1154,27 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
           })
           return next
         })
+        const runningTasks = response.tasks.filter((task) =>
+          task.status === 'pending' || task.status === 'running'
+        )
+        if (runningTasks.length > 0) {
+          setOpenReadResults((previous) => {
+            const next = new Set(previous)
+            runningTasks.forEach((task) => next.add(task.task_id))
+            return Array.from(next)
+          })
+          if (!activeReadResultRef.current) {
+            const firstRunning = runningTasks[0]
+            setActiveReadResult(firstRunning.task_id)
+            activeReadResultRef.current = firstRunning.task_id
+            setDeepReadProgress(firstRunning.progress)
+            setDeepReadStage(firstRunning.current_stage)
+            setCurrentStages(firstRunning.stages || {})
+          }
+          runningTasks.forEach((task) => {
+            void pollReadResult(task)
+          })
+        }
       } catch (error) {
         console.error('Failed to load deep read results:', error)
       }
@@ -579,7 +1194,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
       const paperId = detail?.paperId || ''
       const paperTitle = detail?.paperTitle || 'Untitled Paper'
 
-      setActiveLeftDoc('litReview')
+      setActiveWorkspace({ kind: 'deepRead' })
 
       try {
         if (paperId) {
@@ -606,7 +1221,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
         })
 
         const now = new Date().toISOString()
-        upsertReadResult({
+        const pendingTask: DeepReadTask = {
           task_id,
           paper_id: paperId,
           paper_title: paperTitle,
@@ -616,48 +1231,19 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
           stages: {},
           created_at: now,
           updated_at: now,
-        })
+        }
+        upsertReadResult(pendingTask)
         setOpenReadResults(prev => prev.includes(task_id) ? prev : [...prev, task_id])
         setActiveReadResult(task_id)
-
-        const result = await deepReadApi.pollUntilComplete(task_id, (poll) => {
-          setDeepReadProgress(poll.progress)
-          setDeepReadStage(poll.currentStage)
-          setCurrentStages(poll.stages)
-          upsertReadResult({
-            task_id,
-            paper_id: paperId,
-            paper_title: paperTitle,
-            status: poll.status,
-            progress: poll.progress,
-            current_stage: poll.currentStage,
-            stages: poll.stages,
-            created_at: now,
-            updated_at: new Date().toISOString(),
-          })
-        })
-
-        setDeepReadProgress(100)
-        setDeepReadStage(result.current_stage)
-        setCurrentStages(result.stages)
-        upsertReadResult({
-          task_id,
-          paper_id: result.paper_id || paperId,
-          paper_title: result.paper_title || paperTitle,
-          status: 'completed',
-          progress: 100,
-          current_stage: result.current_stage,
-          stages: result.stages,
-          created_at: now,
-          updated_at: new Date().toISOString(),
-        })
+        activeReadResultRef.current = task_id
+        void pollReadResult(pendingTask)
       } catch (error) {
         console.error('Deep read failed:', error)
       }
     }
 
     const handleJumpToResult = () => {
-      setActiveLeftDoc('litReview')
+      setActiveWorkspace({ kind: 'deepRead' })
     }
 
     window.addEventListener('startDeepRead', handleStartDeepRead as EventListener)
@@ -667,10 +1253,10 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
       window.removeEventListener('startDeepRead', handleStartDeepRead as EventListener)
       window.removeEventListener('jumpToResult', handleJumpToResult)
     }
-  }, [setActiveLeftDoc, readResults])
+  }, [readResults])
 
   return (
-    <section className="flex-1 min-w-0 flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
+    <section className="relative min-h-0 flex-1 min-w-0 flex flex-col bg-academic-bg border-r border-academic-border h-full overflow-hidden p-2">
 
       {/* Document Details Card */}
       {showDocDetails && (
@@ -705,25 +1291,68 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
         </div>
       )}
 
-      {activeLeftDoc === 'methodology' ? (
+      {(activeWorkspace.kind === 'research' || activeWorkspace.kind === 'newResearch') ? (
         <>
           {/* Editor Toolbar */}
           <div className="bg-academic-panel border-b-2 border-academic-border py-1 px-6 flex items-center justify-between">
-            <div className="flex items-center gap-1">
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif font-bold text-xs" title="Bold">B</button>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif italic text-xs" title="Italic">I</button>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-text hover:bg-academic-hover transition-colors font-serif underline text-xs" title="Underline">U</button>
-              <div className="w-px h-3 bg-academic-border mx-1"></div>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs" title="Heading 1">H1</button>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs" title="Heading 2">H2</button>
-              <div className="w-px h-3 bg-academic-border mx-1"></div>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-list-ul"></i></button>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-list-ol"></i></button>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-muted hover:bg-academic-hover hover:text-academic-text transition-colors text-xs"><i className="fa-solid fa-link"></i></button>
-              <div className="w-px h-3 bg-academic-border mx-1"></div>
-              <button className="w-6 h-6 flex items-center justify-center rounded-md text-academic-accent bg-red-50 hover:bg-red-100 transition-colors text-xs" title="Insert Math"><i className="fa-solid fa-square-root-variable"></i></button>
+            <div className="min-w-0 flex items-center gap-2">
+              <i className="fa-solid fa-file-lines text-xs text-academic-accent"></i>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold text-academic-text">
+                  {activeResearch?.title || 'New Research'}
+                </div>
+                <div className="text-[10px] text-academic-muted">
+                  {activeResearch ? `${researchSessions.length} session${researchSessions.length === 1 ? '' : 's'}` : 'Create a research report'}
+                </div>
+              </div>
             </div>
             <div className="flex items-center gap-2">
+              {activeResearch && (
+                <>
+                  <select
+                    className="h-6 max-w-36 rounded border border-academic-border bg-white px-2 text-[10px] text-academic-text outline-none"
+                    value={agentTaskId || ''}
+                    onChange={(event) => {
+                      const session = researchSessions.find((item) => item.task_id === event.currentTarget.value)
+                      if (session) {
+                        void loadAgentSession(session)
+                      }
+                    }}
+                    title="Switch session"
+                  >
+                    {researchSessions.length === 0 ? (
+                      <option value="">No Session</option>
+                    ) : researchSessions.map((session, index) => (
+                      <option key={session.task_id} value={session.task_id}>
+                        {`Session ${researchSessions.length - index} · ${session.status}`}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="text-[10px] px-2 py-1 border border-academic-border bg-white rounded hover:bg-academic-hover"
+                    onClick={startNewSessionInCurrentResearch}
+                    title="Create a new session under this research"
+                  >
+                    New Session
+                  </button>
+                  <button
+                    className="text-[10px] px-2 py-1 border border-academic-border bg-white rounded hover:bg-academic-hover disabled:opacity-50"
+                    disabled={!agentTaskId}
+                    onClick={() => void clearCurrentSession()}
+                    title="Clear this session without deleting the report"
+                  >
+                    Clear Session
+                  </button>
+                  <button
+                    className="text-[10px] px-2 py-1 border border-red-200 bg-white text-red-600 rounded hover:bg-red-50 disabled:opacity-50"
+                    disabled={!agentTaskId}
+                    onClick={() => void deleteCurrentSession()}
+                    title="Delete this session without deleting the report"
+                  >
+                    Delete Session
+                  </button>
+                </>
+              )}
               {agentPhase !== 'idle' ? (
                 <>
                   <span className={`text-xs px-1.5 py-0.5 rounded ${
@@ -790,7 +1419,9 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
             ) : agentPhase === 'starting' ? (
               /* Start form */
               <div className="max-w-lg mx-auto space-y-4 py-8">
-                <h3 className="text-base font-semibold text-gray-800">Start Research Agent</h3>
+                <h3 className="text-base font-semibold text-gray-800">
+                  {activeResearch ? 'Start New Session' : 'Start New Research'}
+                </h3>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">Research Question</label>
                   <textarea className="w-full border border-gray-300 rounded-md p-2 text-sm resize-none focus:ring-1 focus:ring-blue-100 focus:border-blue-400 outline-none" rows={2}
@@ -828,26 +1459,28 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
             )}
           </div>
 
-          {/* Bottom Split - LLM Research Area */}
-          <div className="h-[320px] shrink-0 border-t-2 border-academic-border bg-academic-panel flex overflow-hidden">
+          {/* Bottom Research Session Area */}
+          <div className={`${isAgentChatExpanded ? 'absolute inset-x-2 bottom-2 top-2 z-30 shadow-[0_-18px_46px_rgba(15,23,42,0.16)]' : 'h-[320px] shrink-0'} border-t-2 border-academic-border bg-academic-panel flex overflow-hidden transition-all duration-200`}>
             {agentPhase !== 'idle' ? (
-              <>
-                <ResearchProgress steps={agentProgressSteps.length > 0 ? agentProgressSteps : [
-                  { label: 'Initialize', status: agentLoading ? 'active' : 'pending', description: 'Setting up...', progress: agentLoading ? 30 : 0 },
-                ]} />
-                <AIChat messages={agentMessages} progressSteps={agentProgressSteps} loading={agentLoading}
-                  onSend={agentPhase === 'waiting_input' ? agentRespond : undefined}
-                  placeholder={agentPhase === 'waiting_input' ? 'Respond or click a button above...' : 'Agent is working...'} />
-              </>
+              <AIChat messages={agentMessages} nodes={agentTimelineNodes} loading={agentLoading || agentPhase === 'running'}
+                expanded={isAgentChatExpanded}
+                onToggleExpanded={() => setIsAgentChatExpanded((previous) => !previous)}
+                onSend={canSendAgentCommand ? agentRespond : undefined}
+                placeholder={canSendAgentCommand ? '输入继续/结束/引导，或点击上方按钮...' : 'Agent is working...'}
+                pendingReferences={pendingAgentReferences}
+                onRemovePendingReference={removePendingAgentReference}
+                hasSearchResults={hasAgentSearchPapers}
+                onShowSearchResults={onShowAgentSearchPapers} />
             ) : (
-              <>
-                <ResearchProgress steps={[]} />
-                <AIChat progressSteps={[]} />
-              </>
+              <AIChat
+                nodes={agentTimelineNodes}
+                expanded={isAgentChatExpanded}
+                onToggleExpanded={() => setIsAgentChatExpanded((previous) => !previous)}
+              />
             )}
           </div>
         </>
-      ) : activeLeftDoc === 'litReview' ? (
+      ) : activeWorkspace.kind === 'deepRead' ? (
         <div className="flex-1 min-h-0 flex gap-2 overflow-hidden">
           {/* Middle Column: Tabs and List */}
           <div className="w-64 min-h-0 flex flex-col gap-2 shrink-0">
@@ -863,11 +1496,12 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                 {openReadResults.map((resultId) => {
                   const summary = getReadResultSummary(resultId)
                   const title = summary?.paper_title || '未命名文献'
+                  const meta = getDeepReadStatusMeta(summary?.status, summary?.progress || 0)
 
                   return (
                     <div
                       key={resultId}
-                      className={`group flex items-center justify-between px-3 py-2 rounded text-xs font-medium transition-colors cursor-pointer ${
+                      className={`group rounded px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
                         activeReadResult === resultId
                           ? 'bg-academic-accent text-white'
                           : 'bg-academic-hover text-academic-text hover:bg-academic-border'
@@ -881,20 +1515,37 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                       }}
                       title={title}
                     >
-                      <div className="min-w-0 flex flex-1 items-center gap-2">
-                        <i className="fa-solid fa-file-lines shrink-0"></i>
-                        <span className="read-result-title-marquee">
-                          <span className="read-result-title-marquee__text">{title}</span>
-                        </span>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex flex-1 items-center gap-2">
+                          <i className="fa-solid fa-file-lines shrink-0"></i>
+                          <span className="read-result-title-marquee">
+                            <span className="read-result-title-marquee__text">{title}</span>
+                          </span>
+                        </div>
+                        {summary && (
+                          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] ${
+                            activeReadResult === resultId ? 'bg-white/20 text-white' : meta.chipClass
+                          }`}>
+                            {meta.text}
+                          </span>
+                        )}
+                        <button
+                          onClick={(e) => handleCloseOpenReadResult(resultId, e)}
+                          className="shrink-0 hover:text-red-500"
+                          aria-label="关闭阅读结果"
+                          title="关闭阅读结果"
+                        >
+                          <i className="fa-solid fa-xmark text-xs"></i>
+                        </button>
                       </div>
-                      <button
-                        onClick={(e) => handleCloseOpenReadResult(resultId, e)}
-                        className="ml-2 shrink-0 hover:text-red-500"
-                        aria-label="关闭阅读结果"
-                        title="关闭阅读结果"
-                      >
-                        <i className="fa-solid fa-xmark text-xs"></i>
-                      </button>
+                      {summary && (
+                        <DeepReadProgressBar
+                          status={summary.status}
+                          progress={summary.progress}
+                          compact
+                          inverted={activeReadResult === resultId}
+                        />
+                      )}
                     </div>
                   )
                 })}
@@ -926,16 +1577,7 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
                 {filteredReadResults.length > 0 ? (
                   filteredReadResults.map((result) => {
-                    const statusText =
-                      result.status === 'completed' ? '完成' :
-                      result.status === 'failed' ? '失败' :
-                      result.status === 'running' ? `${result.progress}%` :
-                      '等待'
-                    const statusClass =
-                      result.status === 'completed' ? 'bg-green-100 text-green-700' :
-                      result.status === 'failed' ? 'bg-red-100 text-red-700' :
-                      result.status === 'running' ? 'bg-yellow-100 text-yellow-700' :
-                      'bg-academic-border text-academic-muted'
+                    const meta = getDeepReadStatusMeta(result.status, result.progress)
 
                     return (
                       <div
@@ -953,9 +1595,13 @@ function LeftWorkspace({ showDocDetails, onCloseDetails, activeLeftDoc, setActiv
                           <span className="shrink-0 text-[10px] text-academic-muted">{formatRelativeTime(result.updated_at)}</span>
                         </div>
                         <div className="flex flex-wrap gap-1">
-                          <span className={`px-1.5 py-0.5 text-[10px] rounded ${statusClass}`}>{statusText}</span>
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${meta.chipClass}`}>
+                            <i className={`fa-solid ${meta.icon}`}></i>
+                            {meta.text}
+                          </span>
                           <span className="px-1.5 py-0.5 bg-white text-[10px] rounded text-academic-muted">{result.paper_id}</span>
                         </div>
+                        <DeepReadProgressBar status={result.status} progress={result.progress} />
                       </div>
                     )
                   })
@@ -1442,6 +2088,8 @@ function RelatedPaperCard({ paper, onOpen }: {
   paper: RelatedPaper
   onOpen: (arxivId: string) => void
 }) {
+  const reference = relatedPaperToReference(paper)
+
   return (
     <div
       className="p-3 border border-academic-border rounded-lg hover:bg-academic-hover hover:border-academic-accent cursor-pointer transition-all group"
@@ -1457,12 +2105,44 @@ function RelatedPaperCard({ paper, onOpen }: {
         {paper.year && (
           <span className="text-xs text-academic-muted bg-academic-hover px-1.5 py-0.5 rounded">{paper.year}</span>
         )}
-        <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-academic-muted opacity-0 group-hover:opacity-100 transition-opacity ml-auto"></i>
+        <div className="ml-auto flex items-center gap-1">
+          <ReferenceButton
+            reference={reference}
+            className="opacity-0 group-hover:opacity-100"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <i className="fa-solid fa-arrow-up-right-from-square text-[10px] text-academic-muted opacity-0 group-hover:opacity-100 transition-opacity"></i>
+        </div>
       </div>
       {paper.relevance && (
         <p className="text-xs mt-1.5 text-academic-text/60 italic">{paper.relevance}</p>
       )}
     </div>
+  )
+}
+
+function ReferenceButton({
+  reference,
+  className = '',
+  onClick,
+}: {
+  reference: ConversationReferenceObject
+  className?: string
+  onClick?: (event: MouseEvent<HTMLButtonElement>) => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`inline-flex h-7 w-7 items-center justify-center rounded border border-academic-border bg-white text-academic-muted transition-colors hover:border-academic-accent hover:text-academic-accent ${className}`}
+      title="引用到对话"
+      aria-label="引用到对话"
+      onClick={(event) => {
+        onClick?.(event)
+        addReferenceToConversation(reference)
+      }}
+    >
+      <i className="fa-solid fa-quote-right text-[10px]"></i>
+    </button>
   )
 }
 
@@ -1524,195 +2204,881 @@ interface ProgressStep {
   description: string
   detail?: string
   progress?: number
+  timestamp?: string
+  stageNodes?: ProgressStageNode[]
 }
 
-function ProgressTimeline({
-  steps,
-  emptyText,
-  compact = false,
-  collapsible = false,
+interface ProgressStageNode {
+  stage: number
+  label: string
+  status: 'completed' | 'active' | 'pending'
+  description: string
+  detail?: string
+  timestamp?: string
+}
+
+function parseReferenceDeepReadStage(step: ProgressStep) {
+  const stageMatch = step.label.match(/^Run: reference deep read stage (\d+)/)
+  if (!stageMatch) return null
+
+  const paperMatch = step.description.match(/for\s+(.+?)\.?$/)
+  return {
+    stage: Number(stageMatch[1]),
+    paperId: paperMatch?.[1] || 'attached reference',
+  }
+}
+
+function parseReferenceDeepReadStart(step: ProgressStep) {
+  if (step.label !== 'Run: deep read reference') return null
+
+  const paperMatch = step.description.match(/paper\s+(.+?)\.?$/)
+  return paperMatch?.[1] || 'attached reference'
+}
+
+function compactReferenceDeepReadSteps(steps: ProgressStep[]) {
+  const compacted: ProgressStep[] = []
+  const groupByPaper = new Map<string, ProgressStep>()
+  const wrapperLabels = new Set([
+    'Run: deep read attached references',
+    'Run: attach references',
+  ])
+
+  const getGroup = (paperId: string, fallbackStep: ProgressStep) => {
+    const existing = groupByPaper.get(paperId)
+    if (existing) return existing
+
+    const group: ProgressStep = {
+      label: 'Run: reference deep read',
+      status: 'active',
+      description: `Deep reading attached paper ${paperId}.`,
+      progress: fallbackStep.progress ?? 0,
+      timestamp: fallbackStep.timestamp,
+      stageNodes: [],
+    }
+    groupByPaper.set(paperId, group)
+    compacted.push(group)
+    return group
+  }
+
+  steps.forEach((step) => {
+    if (wrapperLabels.has(step.label)) {
+      return
+    }
+
+    const startedPaperId = parseReferenceDeepReadStart(step)
+    if (startedPaperId) {
+      const group = getGroup(startedPaperId, step)
+      group.status = step.status === 'pending' ? 'pending' : 'active'
+      group.progress = Math.max(group.progress || 0, step.progress || 0)
+      return
+    }
+
+    const stage = parseReferenceDeepReadStage(step)
+    if (!stage) {
+      compacted.push(step)
+      return
+    }
+
+    const group = getGroup(stage.paperId, step)
+    group.progress = Math.max(group.progress || 0, step.progress || 0)
+    const stageNode: ProgressStageNode = {
+      stage: stage.stage,
+      label: `Stage ${stage.stage}`,
+      status: step.status,
+      description: step.description,
+      detail: step.detail,
+      timestamp: step.timestamp,
+    }
+    const existingIndex = group.stageNodes?.findIndex((node) => node.stage === stage.stage) ?? -1
+    if (existingIndex >= 0 && group.stageNodes) {
+      group.stageNodes[existingIndex] = stageNode
+    } else {
+      group.stageNodes = [...(group.stageNodes || []), stageNode].sort((a, b) => a.stage - b.stage)
+    }
+
+    const maxStage = Math.max(...(group.stageNodes || []).map((node) => node.stage))
+    group.progress = Math.max(group.progress || 0, Math.min(100, Math.round((maxStage / 3) * 100)))
+    group.status = maxStage >= 3 ? 'completed' : 'active'
+    group.detail = stageNode.detail
+    group.timestamp = group.timestamp || step.timestamp
+  })
+
+  return compacted
+}
+
+function ProgressDetailPreview({
+  content,
+  compact,
+  muted = false,
+  onExpand,
 }: {
-  steps?: ProgressStep[]
-  emptyText: string
-  compact?: boolean
-  collapsible?: boolean
+  content: string
+  compact: boolean
+  muted?: boolean
+  onExpand: () => void
 }) {
-  const displaySteps: ProgressStep[] = steps || []
-  const progressKey = displaySteps.map((step) => `${step.status}:${step.label}`).join('|')
-  const defaultOpenIndex = getDefaultOpenProgressIndex(displaySteps)
-  const stepButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const [expandedStepIndexes, setExpandedStepIndexes] = useState<Set<number>>(
-    () => new Set(defaultOpenIndex >= 0 ? [defaultOpenIndex] : [])
+  return (
+    <div className="group/detail relative mt-2">
+      <button
+        type="button"
+        className="absolute right-1.5 top-1.5 z-10 inline-flex items-center gap-1 rounded border border-academic-border bg-white px-1.5 py-0.5 text-[9px] text-academic-muted opacity-80 shadow-sm transition-colors hover:border-academic-accent/40 hover:text-academic-accent group-hover/detail:opacity-100"
+        title="展开完整内容"
+        aria-label="展开完整内容"
+        onClick={onExpand}
+      >
+        <i className="fa-solid fa-up-right-and-down-left-from-center text-[8px]"></i>
+        展开
+      </button>
+      <pre className={`${compact ? 'max-h-24' : 'max-h-20'} overflow-auto whitespace-pre-wrap rounded ${muted ? 'bg-academic-bg' : 'border border-academic-border bg-white'} px-2 py-1.5 pr-14 font-mono text-[9px] leading-4 text-academic-text/75`}>
+        {content}
+      </pre>
+    </div>
   )
+}
 
-  useEffect(() => {
-    if (!collapsible) return
-    setExpandedStepIndexes(new Set(defaultOpenIndex >= 0 ? [defaultOpenIndex] : []))
-  }, [collapsible, defaultOpenIndex, progressKey])
+type AgentNodeKind = 'conversation' | 'deep_read' | 'thought'
 
-  useEffect(() => {
-    if (!collapsible || defaultOpenIndex < 0) return
-    const currentButton = stepButtonRefs.current[defaultOpenIndex]
-    if (!currentButton) return
+interface AgentNode {
+  id: string
+  kind: AgentNodeKind
+  title: string
+  status: 'completed' | 'active' | 'pending'
+  description: string
+  timestamp?: string
+  step?: ProgressStep
+  messages: Array<{ message: ChatMessage; index: number }>
+}
 
-    currentButton.focus({ preventScroll: true })
-    currentButton.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }, [collapsible, defaultOpenIndex, progressKey])
+function isPromptLikeProgressStep(step?: ProgressStep) {
+  if (!step) return false
+  return (
+    step.label === 'Await Decision' ||
+    step.label === 'Await User Answer' ||
+    step.label === 'Await Confirmation' ||
+    step.label === 'Run: ask_user'
+  )
+}
 
-  const toggleStep = (index: number) => {
-    setExpandedStepIndexes((current) => {
-      const next = new Set(current)
-      if (next.has(index)) {
-        next.delete(index)
-      } else {
-        next.add(index)
+function deriveConversationTitle(messages: Array<{ message: ChatMessage; index: number }>, fallback = 'Conversation') {
+  const assistantWithActions = messages.find(({ message }) => (
+    message.role === 'assistant' && Boolean(message.actions?.length)
+  ))
+  if (assistantWithActions) {
+    const firstLine = assistantWithActions.message.content
+      .split('\n')
+      .map((line) => line.replace(/^#+\s*/, '').trim())
+      .find(Boolean)
+    return firstLine || fallback
+  }
+  const latest = messages[messages.length - 1]?.message
+  if (!latest) return fallback
+  return latest.role === 'user' ? 'User Input' : 'Conversation'
+}
+
+type ChatMessage = AgentChatMessage
+type ChatAction = NonNullable<ChatMessage['actions']>[number]
+
+function buildAgentNodesFromTimelineNodes(
+  timelineNodes: AgentTimelineNode[],
+  localMessages: ChatMessage[] = [],
+): AgentNode[] {
+  const nodes: AgentNode[] = []
+  const backendMessageKeys = new Set<string>()
+  let pendingDeepReadSteps: ProgressStep[] = []
+  let messageIndex = 0
+
+  const flushDeepReadSteps = () => {
+    if (pendingDeepReadSteps.length === 0) return
+    const compacted = compactReferenceDeepReadSteps(pendingDeepReadSteps)
+    compacted.forEach((step, index) => {
+      nodes.push({
+        id: `deep-read-${step.label}-${step.timestamp || index}-${nodes.length}`,
+        kind: 'deep_read',
+        title: step.label,
+        status: step.status,
+        description: step.description || '',
+        timestamp: step.timestamp,
+        step,
+        messages: [],
+      })
+    })
+    pendingDeepReadSteps = []
+  }
+
+  const pushStepNode = (timelineNode: AgentTimelineNode, step: ProgressStep, index: number) => {
+    const nextNode: AgentNode = {
+      id: timelineNode.id || `${timelineNode.kind}-${index}`,
+      kind: timelineNode.kind === 'conversation' ? 'conversation' : 'thought',
+      title: timelineNode.title || step.label,
+      status: normalizeNodeStatus(timelineNode.status || step.status),
+      description: step.description || '',
+      timestamp: step.timestamp || timelineNode.created_at,
+      step,
+      messages: [],
+    }
+    const previousNode = nodes[nodes.length - 1]
+    const isDuplicate = previousNode
+      && previousNode.kind === nextNode.kind
+      && previousNode.title === nextNode.title
+      && previousNode.description === nextNode.description
+      && previousNode.messages.length === 0
+    if (!isDuplicate) {
+      nodes.push(nextNode)
+    }
+  }
+
+  timelineNodes
+    .slice()
+    .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
+    .forEach((timelineNode, index) => {
+      const message = messageFromTimelineNode(timelineNode)
+      if (message) {
+        flushDeepReadSteps()
+        backendMessageKeys.add(chatMessageSemanticKey(message))
+        nodes.push({
+          id: timelineNode.id || `conversation-${index}`,
+          kind: 'conversation',
+          title: timelineNode.title || (message.role === 'user' ? 'User Input' : 'Conversation'),
+          status: normalizeNodeStatus(timelineNode.status),
+          description: '',
+          timestamp: message.created_at || timelineNode.created_at,
+          messages: [{ message, index: messageIndex }],
+        })
+        messageIndex += 1
+        return
       }
-      return next
+
+      const step = nodeStepToProgressStep(timelineNode)
+      if (!step) return
+
+      if (timelineNode.kind === 'conversation' && isPromptLikeProgressStep(step)) {
+        return
+      }
+
+      if (timelineNode.kind === 'deep_read') {
+        pendingDeepReadSteps.push(step)
+        return
+      }
+
+      flushDeepReadSteps()
+      pushStepNode(timelineNode, step, index)
+    })
+
+  flushDeepReadSteps()
+
+  const localOnly = localMessages.filter((message) => !backendMessageKeys.has(chatMessageSemanticKey(message)))
+  if (localOnly.length > 0) {
+    nodes.push({
+      id: 'local-conversation',
+      kind: 'conversation',
+      title: deriveConversationTitle(localOnly.map((message, index) => ({ message, index }))),
+      status: 'completed',
+      description: '',
+      timestamp: localOnly[0]?.created_at,
+      messages: localOnly.map((message, index) => ({ message, index: messageIndex + index })),
     })
   }
 
-  return (
-    <div className={`flex-1 overflow-y-auto ${compact ? 'p-4' : 'p-6'}`}>
-      {displaySteps.length === 0 ? (
-        <p className="text-xs text-academic-muted text-center py-8">{emptyText}</p>
-      ) : (
-        <div className={`relative pl-4 ${compact ? 'space-y-4 before:left-[21px]' : 'space-y-5 before:left-[23px]'} before:absolute before:inset-y-0 before:w-px before:bg-academic-border`}>
-          {displaySteps.map((step, i) => {
-            const isExpanded = !collapsible || expandedStepIndexes.has(i)
-            const titleClass = `font-medium text-xs ${step.status === 'active' ? 'text-academic-accent' : 'text-academic-text'}`
-
-            return (
-              <div key={i} className={`relative z-10 flex gap-3 ${step.status === 'completed' ? 'opacity-60' : step.status === 'pending' ? 'opacity-50' : ''}`}>
-                {step.status === 'completed' ? (
-                  <div className="w-4 h-4 rounded-full bg-academic-accent text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-                    <i className="fa-solid fa-check text-[8px]"></i>
-                  </div>
-                ) : step.status === 'active' ? (
-                  <div className="w-4 h-4 rounded-full border-2 border-academic-accent bg-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
-                    <div className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-pulse"></div>
-                  </div>
-                ) : (
-                  <div className="w-4 h-4 rounded-full border-2 border-academic-border bg-white shrink-0 mt-0.5"></div>
-                )}
-                <div className="min-w-0 flex-1">
-                  {collapsible ? (
-                    <div className="grid w-full grid-cols-[minmax(0,1fr)_24px] items-start gap-2">
-                      <div className="min-w-0 pt-0.5">
-                        <span className={`${titleClass} leading-4`}>{step.label}</span>
-                        {step.status === 'active' && (
-                          <span className="ml-2 inline-flex rounded-sm border border-red-100 bg-red-50 px-1.5 py-0.5 text-[9px] text-academic-accent">In Progress</span>
-                        )}
-                      </div>
-                      <button
-                        ref={(element) => { stepButtonRefs.current[i] = element }}
-                        className="flex h-6 w-6 shrink-0 items-center justify-center justify-self-end rounded text-academic-muted outline-none transition-colors hover:bg-academic-hover hover:text-academic-accent focus-visible:ring-2 focus-visible:ring-academic-accent/30"
-                        onClick={() => toggleStep(i)}
-                        type="button"
-                        title={isExpanded ? 'Collapse step' : 'Expand step'}
-                        aria-label={isExpanded ? 'Collapse step' : 'Expand step'}
-                      >
-                        <i className={`fa-solid fa-chevron-${isExpanded ? 'up' : 'down'} text-[10px] text-academic-muted`}></i>
-                      </button>
-                    </div>
-                  ) : (
-                    <h4 className={`${titleClass} ${step.status === 'active' ? 'flex items-center gap-2' : ''}`}>
-                      {step.label}
-                      {step.status === 'active' && (
-                        <span className="px-1.5 py-0.5 rounded-sm bg-red-50 text-[9px] border border-red-100">In Progress</span>
-                      )}
-                    </h4>
-                  )}
-                  {isExpanded && step.status === 'active' && step.progress !== undefined && (
-                    <div className="w-full bg-academic-hover h-1.5 rounded-full mt-2 overflow-hidden border border-academic-border">
-                      <div className="bg-academic-accent h-full rounded-full relative" style={{ width: `${step.progress}%` }}>
-                        <div className="absolute inset-0 bg-white/20 w-full animate-shimmer"></div>
-                      </div>
-                    </div>
-                  )}
-                  {isExpanded && step.description && (
-                    <p className="text-[10px] text-academic-muted mt-1.5">{step.description}</p>
-                  )}
-                  {isExpanded && step.detail && (
-                    <pre className={`${compact ? 'max-h-24' : 'max-h-20'} mt-2 overflow-auto whitespace-pre-wrap rounded border border-academic-border bg-white px-2 py-1.5 font-mono text-[9px] leading-4 text-academic-text/75`}>
-                      {step.detail}
-                    </pre>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
+  return nodes
 }
 
-function getDefaultOpenProgressIndex(steps: ProgressStep[]) {
-  const activeIndex = steps.findIndex((step) => step.status === 'active')
-  if (activeIndex >= 0) return activeIndex
+function AgentChoiceActions({
+  actions,
+  disabled,
+  onChoose,
+  onOther,
+}: {
+  actions: ChatAction[]
+  disabled?: boolean
+  onChoose?: (value: string) => void
+  onOther: () => void
+}) {
+  const yesAction = actions[0]
+  const noAction = actions[1]
+  const buttonClass = 'rounded bg-academic-accent px-2.5 py-1 text-[10px] text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 disabled:hover:bg-gray-200'
+  const explicitActionLabels: Record<string, string> = {
+    retry: '重试',
+    replan: '重新规划',
+    done: '结束',
+    finalize: '结束',
+  }
+  const hasExplicitRecoveryActions = actions.some((action) => action.value in explicitActionLabels)
 
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
-    if (steps[index].status !== 'pending') return index
+  if (!yesAction || !noAction || hasExplicitRecoveryActions) {
+    return (
+      <div className="mt-2 flex justify-end gap-2 border-t border-academic-border pt-2">
+        {actions.map((action, index) => (
+          <button
+            key={index}
+            className={action.value === 'done' || action.value === 'finalize'
+              ? 'rounded border border-academic-border bg-white px-2.5 py-1 text-[10px] text-academic-text transition-colors hover:bg-academic-hover disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:hover:bg-gray-100'
+              : buttonClass}
+            onClick={() => onChoose?.(action.value)}
+            disabled={disabled || !onChoose}
+            title={action.label}
+          >
+            {explicitActionLabels[action.value] || action.label}
+          </button>
+        ))}
+      </div>
+    )
   }
 
-  return steps.length > 0 ? 0 : -1
-}
-
-function ResearchProgress({ steps }: { steps?: ProgressStep[] }) {
   return (
-    <div className="w-1/2 border-r-2 border-academic-border flex flex-col">
-      <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center px-3">
-        <h3 className="font-serif text-xs font-bold flex items-center gap-2">
-          <i className="fa-solid fa-bars-progress text-academic-accent text-xs"></i>
-          Research Progress
-        </h3>
-      </div>
-
-      <ProgressTimeline
-        collapsible
-        steps={steps}
-        emptyText="No progress yet. Start the agent to begin research."
-      />
+    <div className="mt-2 flex justify-end gap-2 border-t border-academic-border pt-2">
+      <button
+        className={buttonClass}
+        onClick={() => onChoose?.(yesAction.value)}
+        disabled={disabled || !onChoose}
+        title={yesAction.label}
+      >
+        是
+      </button>
+      <button
+        className={buttonClass}
+        onClick={() => onChoose?.(noAction.value)}
+        disabled={disabled || !onChoose}
+        title={noAction.label}
+      >
+        否
+      </button>
+      <button
+        className="rounded border border-academic-border bg-white px-2.5 py-1 text-[10px] text-academic-text transition-colors hover:bg-academic-hover disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:hover:bg-gray-100"
+        onClick={onOther}
+        disabled={disabled || !onChoose}
+      >
+        其他
+      </button>
     </div>
   )
 }
 
-interface ChatMessage {
-  id?: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  actions?: { label: string; value: string }[]
+function nodeToText(node: unknown): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(nodeToText).join('')
+  if (node && typeof node === 'object' && 'props' in node) {
+    const props = (node as { props?: { children?: unknown } }).props
+    return nodeToText(props?.children)
+  }
+  return ''
+}
+
+const chatMarkdownComponents: any = {
+  a: ({ href, children }: { href?: string; children?: any }) => {
+    const label = nodeToText(children) || href || ''
+    const target = href ? resolveReferenceTarget(href, label) : null
+
+    if (!target) {
+      return (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      )
+    }
+
+    return (
+      <a
+        href={target.href}
+        className="inline-flex items-center gap-1 text-academic-accent underline decoration-red-200 underline-offset-2 hover:text-red-700"
+        title="可引用对象，点击预览"
+        onClick={(event) => {
+          event.preventDefault()
+          previewReferenceObject(referenceTargetToObject(target))
+        }}
+      >
+        {children}
+        <i className="fa-solid fa-quote-right text-[9px] no-underline"></i>
+      </a>
+    )
+  },
+}
+
+function tryParseDetailJson(content?: string): unknown | null {
+  if (!content) return null
+  const trimmed = content.trim()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+}
+
+function formatDetailKey(key: string) {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+}
+
+function markdownFromDetailValue(value: unknown, depth = 0): string {
+  if (value === null || value === undefined || value === '') return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        const rendered = markdownFromDetailValue(item, depth + 1)
+        return rendered.includes('\n') ? `- ${rendered.replace(/\n/g, '\n  ')}` : `- ${rendered}`
+      })
+      .join('\n')
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, nestedValue]) => {
+        const title = formatDetailKey(key)
+        const rendered = markdownFromDetailValue(nestedValue, depth + 1)
+        if (!rendered) return ''
+        if (depth === 0) {
+          return `### ${title}\n\n${rendered}`
+        }
+        return `- **${title}:** ${rendered.replace(/\n/g, '\n  ')}`
+      })
+      .filter(Boolean)
+      .join('\n\n')
+  }
+  return String(value)
+}
+
+function detailToMarkdown(content?: string) {
+  const parsed = tryParseDetailJson(content)
+  if (!parsed) return content || 'No detail available.'
+  return markdownFromDetailValue(parsed) || 'No detail available.'
+}
+
+function DetailMarkdownContent({ content }: { content?: string }) {
+  const markdown = detailToMarkdown(content)
+  return (
+    <div className="chat-markdown text-[11px] leading-5">
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={chatMarkdownComponents}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+function MessageBubble({
+  msg,
+  index,
+  copied,
+  onCopy,
+  showSearchIcon,
+  onShowSearchResults,
+  activeActionIndex,
+  loading,
+  onSend,
+  onChoose,
+  onOther,
+}: {
+  msg: ChatMessage
+  index: number
+  copied: boolean
+  onCopy: (messageId: string, content: string) => void
+  showSearchIcon: boolean
+  onShowSearchResults?: () => void
+  activeActionIndex: number
+  loading?: boolean
+  onSend?: (msg: string, references?: ConversationReferenceObject[]) => void
+  onChoose: (value: string) => void
+  onOther: () => void
+}) {
+  const messageId = msg.id || `message-${index}`
+
+  return (
+    <div className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+      <div className={`relative border rounded-lg px-3 py-2.5 pr-9 text-xs max-w-[92%] shadow-sm ${
+        msg.role === 'user' ? 'bg-academic-bg text-academic-text max-w-[86%]' :
+        msg.role === 'system' ? 'bg-amber-50 text-amber-900 max-w-[92%]' :
+        'bg-academic-hover text-academic-text'
+      }`}>
+        <button
+          className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-academic-muted opacity-40 transition-colors hover:bg-white hover:text-academic-text group-hover:opacity-100 focus:opacity-100"
+          title={copied ? 'Copied' : 'Copy'}
+          aria-label="Copy message"
+          onClick={() => onCopy(messageId, msg.content)}
+        >
+          <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
+        </button>
+        <div className="chat-markdown">
+          <ReactMarkdown
+            remarkPlugins={[remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+            components={chatMarkdownComponents}
+          >
+            {msg.content}
+          </ReactMarkdown>
+        </div>
+        {msg.references && msg.references.length > 0 && (
+          <ReferenceAttachmentBar references={msg.references} readonly />
+        )}
+        {showSearchIcon && onShowSearchResults && (
+          <button
+            className="mt-2 inline-flex items-center gap-2 rounded-md border border-academic-accent/35 bg-red-50 px-2.5 py-1.5 text-[10px] font-medium text-academic-accent shadow-sm transition-colors hover:border-academic-accent hover:bg-red-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-academic-accent/25"
+            title="查看搜索到的论文"
+            aria-label="查看搜索到的论文"
+            onClick={onShowSearchResults}
+          >
+            <i className="fa-solid fa-list-ul text-[10px]"></i>
+            查看搜索论文
+          </button>
+        )}
+        {msg.actions && msg.actions.length > 0 && (
+          <AgentChoiceActions
+            actions={msg.actions}
+            disabled={loading || !onSend || index !== activeActionIndex}
+            onChoose={onChoose}
+            onOther={onOther}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NodeMessageList({
+  messages,
+  copiedMessageId,
+  onCopy,
+  latestAssistantIndex,
+  activeActionIndex,
+  loading,
+  onSend,
+  onChoose,
+  onOther,
+  hasSearchResults,
+  onShowSearchResults,
+}: {
+  messages: Array<{ message: ChatMessage; index: number }>
+  copiedMessageId: string | null
+  onCopy: (messageId: string, content: string) => void
+  latestAssistantIndex: number
+  activeActionIndex: number
+  loading?: boolean
+  onSend?: (msg: string, references?: ConversationReferenceObject[]) => void
+  onChoose: (value: string) => void
+  onOther: () => void
+  hasSearchResults?: boolean
+  onShowSearchResults?: () => void
+}) {
+  return (
+    <div className="space-y-3">
+      {messages.map(({ message, index }) => {
+        const messageId = message.id || `message-${index}`
+        return (
+          <MessageBubble
+            key={messageId}
+            msg={message}
+            index={index}
+            copied={copiedMessageId === messageId}
+            onCopy={onCopy}
+            showSearchIcon={Boolean(hasSearchResults && onShowSearchResults && message.role === 'assistant' && index === latestAssistantIndex)}
+            onShowSearchResults={onShowSearchResults}
+            activeActionIndex={activeActionIndex}
+            loading={loading}
+            onSend={onSend}
+            onChoose={onChoose}
+            onOther={onOther}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function AgentNodeShell({
+  node,
+  icon,
+  children,
+}: {
+  node: AgentNode
+  icon: string
+  children?: any
+}) {
+  return (
+    <div className="group flex justify-start">
+      <div className="max-w-[92%] rounded-lg border border-dashed border-academic-border bg-white px-3 py-2.5 text-xs text-academic-text shadow-sm">
+        <div className="flex items-start gap-2">
+          <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${
+            node.status === 'completed'
+              ? 'bg-academic-accent text-white'
+              : node.status === 'active'
+                ? 'border-2 border-academic-accent bg-white text-academic-accent'
+                : 'border border-academic-border bg-white text-academic-muted'
+          }`}>
+            {node.status === 'completed' ? (
+              <i className="fa-solid fa-check text-[8px]"></i>
+            ) : (
+              <i className={`fa-solid ${icon} text-[8px]`}></i>
+            )}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-academic-muted">
+                {node.kind === 'deep_read' ? 'Deep Read Node' : node.kind === 'conversation' ? 'Conversation Node' : 'Thought Node'}
+              </span>
+              <span className="text-xs font-medium text-academic-text">{node.title}</span>
+              {node.status === 'active' && (
+                <span className="inline-flex items-center gap-1 rounded-sm border border-red-100 bg-red-50 px-1.5 py-0.5 text-[9px] text-academic-accent">
+                  In Progress
+                  <span className="inline-flex gap-0.5">
+                    <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce"></span>
+                    <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                    <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                  </span>
+                </span>
+              )}
+            </div>
+            {children}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ThoughtNodeRenderer({
+  node,
+  onExpandDetail,
+}: {
+  node: AgentNode
+  onExpandDetail: (title: string, content: string) => void
+}) {
+  const detail = node.step?.detail
+
+  return (
+    <AgentNodeShell node={node} icon="fa-brain">
+      {node.description && (
+        <p className="mt-1 text-[10px] leading-4 text-academic-muted">{node.description}</p>
+      )}
+      {node.step?.progress !== undefined && node.status === 'active' && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full border border-academic-border bg-academic-bg">
+          <div className="h-full rounded-full bg-academic-accent" style={{ width: `${node.step.progress}%` }} />
+        </div>
+      )}
+      {detail && (
+        <ProgressDetailPreview
+          compact
+          content={detail}
+          muted
+          onExpand={() => onExpandDetail(node.title, detail)}
+        />
+      )}
+    </AgentNodeShell>
+  )
+}
+
+function DeepReadNodeRenderer({
+  node,
+  onExpandDetail,
+}: {
+  node: AgentNode
+  onExpandDetail: (title: string, content: string) => void
+}) {
+  const stageNodes = node.step?.stageNodes || []
+  const [selectedStageNumber, setSelectedStageNumber] = useState<number | null>(
+    stageNodes[stageNodes.length - 1]?.stage || null
+  )
+  const stageKey = stageNodes.map((stage) => `${stage.stage}:${stage.status}`).join('|')
+  useEffect(() => {
+    if (stageNodes.length === 0) return
+    if (!stageNodes.some((stage) => stage.stage === selectedStageNumber)) {
+      setSelectedStageNumber(stageNodes[stageNodes.length - 1].stage)
+    }
+  }, [stageKey])
+  const selectedStage = stageNodes.find((stage) => stage.stage === selectedStageNumber) || stageNodes[stageNodes.length - 1]
+  const detail = selectedStage?.detail || node.step?.detail
+  const progress = node.step?.progress ?? (stageNodes.length > 0 ? Math.round((stageNodes.length / 3) * 100) : 0)
+  const stageLabels: Record<number, string> = {
+    1: '核心概念',
+    2: '论证结构',
+    3: '综合评估',
+  }
+  const expandedMarkdown = detail ? detailToMarkdown(detail) : ''
+
+  return (
+    <AgentNodeShell node={node} icon="fa-book-open-reader">
+      {node.description && (
+        <p className="mt-1 text-[10px] leading-4 text-academic-muted">{node.description}</p>
+      )}
+      <div className="mt-3">
+        <div className="relative px-1 pb-7 pt-2">
+          <div className="absolute left-1 right-1 top-[17px] h-1.5 overflow-hidden rounded-full border border-academic-border bg-academic-bg">
+            <div className="h-full rounded-full bg-academic-accent transition-all duration-500" style={{ width: `${progress}%` }} />
+          </div>
+          <div className="relative flex justify-between">
+            {[1, 2, 3].map((stageNumber) => {
+              const stage = stageNodes.find((item) => item.stage === stageNumber)
+              const selected = selectedStage?.stage === stageNumber
+              return (
+                <button
+                  key={stageNumber}
+                  type="button"
+                  className={`group/stage flex flex-col items-center gap-1 text-[10px] transition-colors ${
+                    stage ? 'cursor-pointer' : 'cursor-default'
+                  }`}
+                  title={stage?.description || stageLabels[stageNumber]}
+                  disabled={!stage}
+                  onClick={() => stage && setSelectedStageNumber(stage.stage)}
+                >
+                  <span className={`flex h-7 w-7 items-center justify-center rounded-full border text-[10px] font-semibold shadow-sm transition-colors ${
+                    selected
+                      ? 'border-academic-accent bg-academic-accent text-white'
+                      : stage
+                        ? 'border-academic-accent bg-white text-academic-accent group-hover/stage:bg-red-50'
+                        : 'border-academic-border bg-white text-academic-muted'
+                  }`}
+                  >
+                    {stageNumber}
+                  </span>
+                  <span className={`w-16 truncate text-center ${selected ? 'text-academic-accent' : 'text-academic-muted'}`}>
+                    {stageLabels[stageNumber]}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        {(selectedStage || detail) && (
+          <div className="rounded border border-academic-border bg-academic-bg/60 px-3 py-2">
+            {selectedStage && (
+              <>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold text-academic-text">
+                    {stageLabels[selectedStage.stage] || selectedStage.label}
+                  </span>
+                  <span className="text-[9px] text-academic-muted">{selectedStage.status}</span>
+                </div>
+                {selectedStage.description && (
+                  <p className="mb-2 text-[10px] leading-4 text-academic-muted">{selectedStage.description}</p>
+                )}
+              </>
+            )}
+            <DetailMarkdownContent content={detail} />
+            {detail && (
+              <button
+                type="button"
+                className="mt-2 inline-flex items-center gap-1 rounded border border-academic-border bg-white px-2 py-1 text-[10px] text-academic-muted transition-colors hover:text-academic-accent"
+                onClick={() => onExpandDetail(selectedStage?.label || node.title, expandedMarkdown)}
+              >
+                <i className="fa-solid fa-up-right-and-down-left-from-center text-[9px]"></i>
+                展开完整内容
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </AgentNodeShell>
+  )
+}
+
+function AgentNodeRenderer({
+  node,
+  copiedMessageId,
+  onCopyMessage,
+  latestAssistantIndex,
+  activeActionIndex,
+  loading,
+  onSend,
+  onChoose,
+  onOther,
+  hasSearchResults,
+  onShowSearchResults,
+  onExpandDetail,
+}: {
+  node: AgentNode
+  copiedMessageId: string | null
+  onCopyMessage: (messageId: string, content: string) => void
+  latestAssistantIndex: number
+  activeActionIndex: number
+  loading?: boolean
+  onSend?: (msg: string, references?: ConversationReferenceObject[]) => void
+  onChoose: (value: string) => void
+  onOther: () => void
+  hasSearchResults?: boolean
+  onShowSearchResults?: () => void
+  onExpandDetail: (title: string, content: string) => void
+}) {
+  const renderMessages = () => (
+    <NodeMessageList
+      messages={node.messages}
+      copiedMessageId={copiedMessageId}
+      onCopy={onCopyMessage}
+      latestAssistantIndex={latestAssistantIndex}
+      activeActionIndex={activeActionIndex}
+      loading={loading}
+      onSend={onSend}
+      onChoose={onChoose}
+      onOther={onOther}
+      hasSearchResults={hasSearchResults}
+      onShowSearchResults={onShowSearchResults}
+    />
+  )
+
+  if (node.kind === 'conversation') {
+    return renderMessages()
+  }
+
+  return (
+    <div className="space-y-3">
+      {node.kind === 'deep_read' ? (
+        <DeepReadNodeRenderer node={node} onExpandDetail={onExpandDetail} />
+      ) : (
+        <ThoughtNodeRenderer node={node} onExpandDetail={onExpandDetail} />
+      )}
+      {node.messages.length > 0 && renderMessages()}
+    </div>
+  )
 }
 
 function AIChat({
   messages,
-  progressSteps,
+  nodes = [],
   onSend,
   loading,
   placeholder,
+  pendingReferences = [],
+  onRemovePendingReference,
+  hasSearchResults,
+  onShowSearchResults,
+  expanded = false,
+  onToggleExpanded,
 }: {
   messages?: ChatMessage[]
-  progressSteps?: ProgressStep[]
-  onSend?: (msg: string) => void
+  nodes?: AgentTimelineNode[]
+  onSend?: (msg: string, references?: ConversationReferenceObject[]) => void
   loading?: boolean
   placeholder?: string
+  pendingReferences?: ConversationReferenceObject[]
+  onRemovePendingReference?: (reference: ConversationReferenceObject) => void
+  hasSearchResults?: boolean
+  onShowSearchResults?: () => void
+  expanded?: boolean
+  onToggleExpanded?: () => void
 }) {
   const [input, setInput] = useState('')
+  const [isOtherInput, setIsOtherInput] = useState(false)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const [detailModal, setDetailModal] = useState<{ title: string; content: string } | null>(null)
+  const [copiedDetailModal, setCopiedDetailModal] = useState(false)
   const chatRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight
     }
-  }, [messages])
+  }, [messages, nodes, loading])
 
   const handleSend = () => {
     const text = input.trim()
-    if (!text || !onSend) return
-    onSend(text)
+    if ((!text && pendingReferences.length === 0) || !onSend) return
+    onSend(text, pendingReferences)
     setInput('')
+    setIsOtherInput(false)
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -1729,98 +3095,194 @@ function AIChat({
     }
   }
 
+  const copyDetailModalContent = async () => {
+    if (!detailModal) return
+
+    try {
+      await navigator.clipboard.writeText(detailModal.content)
+      setCopiedDetailModal(true)
+      window.setTimeout(() => setCopiedDetailModal(false), 1200)
+    } catch {
+      setCopiedDetailModal(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!detailModal) return
+    setCopiedDetailModal(false)
+
+    const handleKeyDown = (event: any) => {
+      if (event.key === 'Escape') {
+        setDetailModal(null)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [detailModal])
+
   const displayMessages: ChatMessage[] = messages || []
-  const displayProgressSteps: ProgressStep[] = progressSteps || []
+  const activeActionIndex = displayMessages.reduce((latest, msg, index) => (
+    msg.actions && msg.actions.length > 0 ? index : latest
+  ), -1)
+  const latestAssistantIndex = displayMessages.reduce((latest, msg, index) => (
+    msg.role === 'assistant' ? index : latest
+  ), -1)
+  const agentNodes = buildAgentNodesFromTimelineNodes(nodes, displayMessages)
+  const activeActivityNode = agentNodes
+    .slice()
+    .reverse()
+    .find((node) => node.status === 'active' || node.step?.status === 'active')
+  const latestStepNode = agentNodes
+    .slice()
+    .reverse()
+    .find((node) => node.step)
+  const loadingNodeId = loading ? (activeActivityNode || latestStepNode)?.id : null
+  const focusOtherInput = () => {
+    setIsOtherInput(true)
+    window.setTimeout(() => inputRef.current?.focus(), 0)
+  }
+  const chooseAction = (value: string) => {
+    setIsOtherInput(false)
+    onSend?.(value, pendingReferences)
+  }
 
   return (
-    <div className="w-1/2 flex flex-col bg-white">
+    <div className="w-full min-h-0 overflow-hidden flex flex-col bg-white">
       <div className="h-8 border-b border-academic-border bg-academic-hover flex items-center justify-between px-3">
         <h3 className="font-serif text-xs font-bold flex items-center gap-2">
           <i className="fa-solid fa-robot text-academic-accent text-xs"></i>
-          LLM Assistant
+          Research Session
         </h3>
         <div className="flex gap-2">
           <button
-            className="text-academic-muted hover:text-academic-text transition-colors"
-            title="History"
-            aria-label="Open history"
-            onClick={() => setHistoryOpen(true)}
+            className={`flex h-6 w-6 items-center justify-center rounded border transition-colors ${
+              expanded
+                ? 'border-academic-accent bg-red-50 text-academic-accent hover:bg-red-100'
+                : 'border-academic-border bg-white text-academic-muted hover:border-academic-accent/50 hover:text-academic-text'
+            }`}
+            title={expanded ? 'Collapse conversation' : 'Expand conversation'}
+            aria-label={expanded ? 'Collapse conversation' : 'Expand conversation'}
+            aria-expanded={expanded}
+            onClick={onToggleExpanded}
           >
-            <i className="fa-solid fa-clock-rotate-left text-xs"></i>
+            <i className={`fa-solid ${expanded ? 'fa-down-left-and-up-right-to-center' : 'fa-up-right-and-down-left-from-center'} text-[10px]`}></i>
           </button>
           <button className="text-academic-muted hover:text-academic-text transition-colors"><i className="fa-solid fa-ellipsis-vertical text-xs"></i></button>
         </div>
       </div>
 
       {/* Chat History */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4" ref={chatRef}>
-        {displayMessages.length === 0 && !loading && (
+      <AutoHideScrollArea
+        className="min-h-0 flex-1"
+        viewportClassName="p-6 pr-4 space-y-4"
+        scrollRef={chatRef}
+      >
+        {agentNodes.length === 0 && !loading && (
           <p className="text-xs text-academic-muted text-center py-8">Start the agent to begin the research conversation.</p>
         )}
-        {displayMessages.map((msg, i) => {
-          const messageId = msg.id || `message-${i}`
-          const copied = copiedMessageId === messageId
+        {agentNodes.map((node) => {
+          const renderedNode = node.id === loadingNodeId
+            ? {
+              ...node,
+              status: 'active' as const,
+              step: node.step ? { ...node.step, status: 'active' as const } : node.step,
+            }
+            : node
           return (
-          <div key={messageId} className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`relative border rounded-lg px-3 py-2.5 pr-9 text-xs max-w-[92%] shadow-sm ${
-              msg.role === 'user' ? 'bg-academic-bg text-academic-text max-w-[86%]' :
-              msg.role === 'system' ? 'bg-amber-50 text-amber-900 max-w-[92%]' :
-              'bg-academic-hover text-academic-text'
-            }`}>
-              <button
-                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded text-academic-muted opacity-40 transition-colors hover:bg-white hover:text-academic-text group-hover:opacity-100 focus:opacity-100"
-                title={copied ? 'Copied' : 'Copy'}
-                aria-label="Copy message"
-                onClick={() => void handleCopy(messageId, msg.content)}
-              >
-                <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
-              </button>
-              <div className="chat-markdown">
-                <ReactMarkdown
-                  remarkPlugins={[remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
-                >
-                  {msg.content}
-                </ReactMarkdown>
-              </div>
-              {msg.actions && msg.actions.length > 0 && (
-                <div className="mt-2 pt-2 border-t border-academic-border flex justify-end gap-2">
-                  {msg.actions.map((action, j) => (
-                    <button
-                      key={j}
-                      className="text-[10px] bg-academic-accent text-white px-2 py-1 rounded hover:bg-red-700 transition-colors"
-                      onClick={() => onSend?.(action.value)}
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )})}
+            <AgentNodeRenderer
+              key={node.id}
+              node={renderedNode}
+              copiedMessageId={copiedMessageId}
+              onCopyMessage={(messageId, content) => void handleCopy(messageId, content)}
+              latestAssistantIndex={latestAssistantIndex}
+              activeActionIndex={activeActionIndex}
+              loading={loading}
+              onSend={onSend}
+              onChoose={chooseAction}
+              onOther={focusOtherInput}
+              hasSearchResults={hasSearchResults}
+              onShowSearchResults={onShowSearchResults}
+              onExpandDetail={(title, content) => setDetailModal({ title, content })}
+            />
+          )
+        })}
 
-        {loading && (
+        {loading && agentNodes.length === 0 && (
           <div className="flex justify-start">
-            <div className="bg-academic-hover border border-academic-border rounded-lg p-2.5 text-xs text-academic-muted">
-              <div className="flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce"></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.1s' }}></span>
-                <span className="w-1.5 h-1.5 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+            <div className="max-w-[82%] rounded-lg border border-academic-border bg-academic-hover p-3 text-xs text-academic-muted shadow-sm">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-academic-accent bg-white">
+                  <span className="h-1.5 w-1.5 rounded-full bg-academic-accent animate-pulse"></span>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 truncate text-xs font-medium text-academic-text">{placeholder || 'Agent is working...'}</span>
+                    <span className="inline-flex gap-0.5">
+                      <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce"></span>
+                      <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                      <span className="h-1 w-1 rounded-full bg-academic-accent animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         )}
-      </div>
+      </AutoHideScrollArea>
+      {detailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-6">
+          <div className="flex h-[min(82vh,720px)] w-[min(760px,calc(100vw-48px))] flex-col overflow-hidden rounded-lg border-2 border-academic-border bg-white shadow-hover">
+            <div className="flex h-10 shrink-0 items-center justify-between border-b border-academic-border bg-academic-hover px-3">
+              <h3 className="min-w-0 truncate font-serif text-sm font-bold text-academic-text">{detailModal.title}</h3>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  className="inline-flex h-7 items-center gap-1.5 rounded border border-academic-border bg-white px-2 text-[10px] text-academic-muted transition-colors hover:text-academic-text"
+                  title="复制完整内容"
+                  aria-label="复制完整内容"
+                  onClick={() => void copyDetailModalContent()}
+                >
+                  <i className={`fa-solid ${copiedDetailModal ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
+                  {copiedDetailModal ? '已复制' : '复制'}
+                </button>
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded text-academic-muted transition-colors hover:bg-white hover:text-academic-text"
+                  title="关闭"
+                  aria-label="关闭"
+                  onClick={() => setDetailModal(null)}
+                >
+                  <i className="fa-solid fa-xmark text-xs"></i>
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <AutoHideScrollArea className="h-full" viewportClassName="p-4">
+                <pre className="whitespace-pre-wrap font-mono text-[11px] leading-5 text-academic-text">
+                  {detailModal.content}
+                </pre>
+              </AutoHideScrollArea>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chat Input */}
       {onSend && (
         <div className="p-3 border-t border-academic-border bg-white shrink-0">
+          <ReferenceAttachmentBar
+            references={pendingReferences}
+            onRemove={onRemovePendingReference}
+          />
           <div className="relative flex items-center">
             <input
+              ref={inputRef}
               type="text"
               className="w-full bg-academic-bg border border-academic-border rounded-full py-2 pl-4 pr-10 text-xs focus:outline-none focus:border-academic-accent transition-colors text-academic-text"
-              placeholder={placeholder || 'Ask about your research...'}
+              placeholder={isOtherInput ? '请输入其他要求...' : (placeholder || 'Ask about your research...')}
               value={input}
               onInput={(e) => setInput((e.target as HTMLInputElement).value)}
               onKeyDown={handleKeyDown}
@@ -1829,7 +3291,7 @@ function AIChat({
             <button
               className="absolute right-1 w-7 h-7 rounded-full bg-academic-accent text-white flex items-center justify-center hover:bg-red-700 transition-colors disabled:opacity-50"
               onClick={handleSend}
-              disabled={loading || !input.trim()}
+              disabled={loading || (!input.trim() && pendingReferences.length === 0)}
             >
               <i className="fa-solid fa-arrow-up text-[10px]"></i>
             </button>
@@ -1837,198 +3299,67 @@ function AIChat({
         </div>
       )}
 
-      {historyOpen && (
-        <AgentHistoryModal
-          messages={displayMessages}
-          steps={displayProgressSteps}
-          onSend={onSend}
-          loading={loading}
-          placeholder={placeholder}
-          onClose={() => setHistoryOpen(false)}
-        />
-      )}
     </div>
   )
 }
 
-function AgentHistoryModal({
-  messages,
-  steps,
-  onSend,
-  loading,
-  placeholder,
-  onClose,
+function ReferenceAttachmentBar({
+  references,
+  readonly = false,
+  onRemove,
 }: {
-  messages: ChatMessage[]
-  steps: ProgressStep[]
-  onSend?: (msg: string) => void
-  loading?: boolean
-  placeholder?: string
-  onClose: () => void
+  references: ConversationReferenceObject[]
+  readonly?: boolean
+  onRemove?: (reference: ConversationReferenceObject) => void
 }) {
-  const [input, setInput] = useState('')
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
-
-  useEffect(() => {
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
-
-  const handleBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.currentTarget === event.target) onClose()
-  }
-
-  const handleSend = () => {
-    const text = input.trim()
-    if (!text || !onSend) return
-    onSend(text)
-    setInput('')
-  }
-
-  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') handleSend()
-  }
-
-  const handleCopy = async (messageId: string, content: string) => {
-    try {
-      await navigator.clipboard.writeText(content)
-      setCopiedMessageId(messageId)
-      window.setTimeout(() => setCopiedMessageId(current => current === messageId ? null : current), 1200)
-    } catch {
-      setCopiedMessageId(null)
-    }
-  }
+  if (references.length === 0) return null
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-[2px]"
-      onClick={handleBackdropClick}
-    >
-      <div className="flex h-[90vh] w-[96vw] max-w-[1680px] overflow-hidden rounded-lg border border-academic-border bg-academic-panel shadow-[0_24px_80px_rgba(15,23,42,0.32)]">
-        <aside className="flex w-[32%] min-w-[260px] flex-col border-r border-academic-border bg-academic-bg/80">
-          <div className="h-12 shrink-0 border-b border-academic-border bg-academic-hover px-4 py-2">
-            <h3 className="font-serif text-sm font-bold text-academic-text">Research Progress</h3>
-            <p className="text-[10px] text-academic-muted">{steps.length} recorded steps</p>
-          </div>
-          <ProgressTimeline
-            compact
-            collapsible
-            steps={steps}
-            emptyText="No progress has been recorded yet."
-          />
-        </aside>
-
-        <section className="flex min-w-0 flex-[1.65] flex-col border-t-4 border-academic-accent bg-white shadow-[inset_12px_0_28px_rgba(15,23,42,0.04)]">
-          <div className="flex h-14 shrink-0 items-center justify-between border-b border-academic-border bg-white px-5">
-            <div>
-              <h3 className="font-serif text-base font-bold text-academic-text">Conversation History</h3>
-              <p className="text-[10px] text-academic-muted">{messages.length} messages</p>
-            </div>
+    <div className={`${readonly ? 'mt-2' : 'mb-2'} flex flex-wrap gap-1.5`}>
+      {references.map((reference) => (
+        <span
+          key={reference.paperId || reference.href}
+          className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-academic-border bg-academic-bg px-2 py-1 text-[10px] text-academic-text"
+        >
+          <button
+            type="button"
+            className="min-w-0 truncate text-left hover:text-academic-accent"
+            title="点击预览"
+            onClick={() => previewReferenceObject(reference)}
+          >
+            <span className="font-medium">{reference.label}</span>
+            {reference.paperId ? (
+              <span className="ml-1 font-mono text-academic-muted">{reference.paperId}</span>
+            ) : null}
+          </button>
+          {!readonly && onRemove ? (
             <button
-              className="flex h-8 w-8 items-center justify-center rounded-md text-academic-muted transition-colors hover:bg-academic-hover hover:text-academic-text"
-              title="Close"
-              aria-label="Close history"
-              onClick={onClose}
+              type="button"
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-academic-muted opacity-0 transition-opacity hover:bg-white hover:text-red-600 group-hover:opacity-100 focus:opacity-100"
+              title="删除引用"
+              aria-label="删除引用"
+              onClick={() => onRemove(reference)}
             >
-              <i className="fa-solid fa-xmark text-sm"></i>
+              <i className="fa-solid fa-xmark text-[9px]"></i>
             </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto bg-white p-6">
-            {messages.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-center text-xs text-academic-muted">
-                No conversation yet.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {messages.map((msg, i) => {
-                  const messageId = msg.id || `history-message-${i}`
-                  const copied = copiedMessageId === messageId
-                  const roleLabel =
-                    msg.role === 'user' ? 'You' :
-                    msg.role === 'system' ? 'System' :
-                    'Assistant'
-                  return (
-                    <div key={messageId} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`relative max-w-[84%] rounded-lg border px-4 py-3 pr-10 text-xs shadow-sm ${
-                        msg.role === 'user' ? 'border-academic-accent/30 bg-red-50 text-academic-text' :
-                        msg.role === 'system' ? 'border-amber-200 bg-amber-50 text-amber-900' :
-                        'border-academic-border bg-academic-hover text-academic-text'
-                      }`}>
-                        <button
-                          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded text-academic-muted opacity-55 transition-colors hover:bg-white hover:text-academic-text hover:opacity-100 focus:opacity-100"
-                          title={copied ? 'Copied' : 'Copy'}
-                          aria-label="Copy message"
-                          onClick={() => void handleCopy(messageId, msg.content)}
-                        >
-                          <i className={`fa-solid ${copied ? 'fa-check' : 'fa-copy'} text-[10px]`}></i>
-                        </button>
-                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-academic-muted">
-                          {roleLabel}
-                        </div>
-                        <div className="chat-markdown">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {msg.content}
-                          </ReactMarkdown>
-                        </div>
-                        {msg.actions && msg.actions.length > 0 && (
-                          <div className="mt-3 flex justify-end gap-2 border-t border-academic-border pt-2">
-                            {msg.actions.map((action, j) => (
-                              <button
-                                key={j}
-                                className="rounded bg-academic-accent px-2.5 py-1 text-[10px] text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-                                onClick={() => onSend?.(action.value)}
-                                disabled={loading || !onSend}
-                              >
-                                {action.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="shrink-0 border-t border-academic-border bg-white p-4">
-            <div className="relative flex items-center">
-              <input
-                type="text"
-                className="w-full rounded-full border border-academic-border bg-academic-bg py-2.5 pl-4 pr-12 text-xs text-academic-text outline-none transition-colors focus:border-academic-accent disabled:cursor-not-allowed disabled:opacity-60"
-                placeholder={placeholder || 'Ask about your research...'}
-                value={input}
-                onInput={(event) => setInput((event.target as HTMLInputElement).value)}
-                onKeyDown={handleInputKeyDown}
-                disabled={loading || !onSend}
-              />
-              <button
-                className="absolute right-1 flex h-8 w-8 items-center justify-center rounded-full bg-academic-accent text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-                onClick={handleSend}
-                disabled={loading || !onSend || !input.trim()}
-                title="Send"
-                aria-label="Send message"
-              >
-                <i className="fa-solid fa-arrow-up text-[10px]"></i>
-              </button>
-            </div>
-          </div>
-        </section>
-      </div>
+          ) : null}
+        </span>
+      ))}
     </div>
   )
 }
 
-function RightWorkspace() {
+function RightWorkspace({
+  agentSearchPapers,
+  showAgentSearchPapers,
+  onShowAgentSearchPapers,
+  onHideAgentSearchPapers,
+}: {
+  agentSearchPapers: AgentSearchPaper[]
+  showAgentSearchPapers: boolean
+  onShowAgentSearchPapers: () => void
+  onHideAgentSearchPapers: () => void
+}) {
   const [showSearch, setShowSearch] = useState(true)
   const [openPapers, setOpenPapers] = useState<LiteratureDetail[]>([])
   const [activePaperId, setActivePaperId] = useState<string | null>(null)
@@ -2041,9 +3372,10 @@ function RightWorkspace() {
   const paperMenuRef = useRef<HTMLDivElement | null>(null)
 
   const activePaper = openPapers.find((paper) => paper.paper_id === activePaperId) ?? null
-  const isSearchVisible = showSearch || openPapers.length === 0
+  const isSearchVisible = !showAgentSearchPapers && (showSearch || openPapers.length === 0)
   const isReferencePreviewOpen = referencePreview.kind !== 'closed'
   const currentWorkspaceTitle =
+    showAgentSearchPapers ? 'Agent Search Results' :
     showSearch || !activePaper ? 'Literature Search' : activePaper.title
   const currentWorkspaceDisplayTitle = formatPaperDisplayTitle(currentWorkspaceTitle)
 
@@ -2074,6 +3406,7 @@ function RightWorkspace() {
 
     setActivePaperId(detail.paper_id)
     setShowSearch(false)
+    onHideAgentSearchPapers()
   }
 
   const handleOpenPaperById = async (paperId: string): Promise<LiteratureDetail | null> => {
@@ -2148,6 +3481,28 @@ function RightWorkspace() {
 
     openPaperDetail(referencePreview.paper)
     handleCloseReferencePreview()
+  }
+
+  const getPreviewReference = (): ConversationReferenceObject | null => {
+    if (referencePreview.kind === 'paper-ready') {
+      return literaturePaperToReference(referencePreview.paper)
+    }
+    if (referencePreview.kind === 'paper-loading' || referencePreview.kind === 'paper-error') {
+      return {
+        kind: 'paper',
+        label: referencePreview.paperId,
+        href: paperHref(referencePreview.paperId),
+        paperId: referencePreview.paperId,
+      }
+    }
+    if (referencePreview.kind === 'external') {
+      return {
+        kind: 'link',
+        label: referencePreview.label,
+        href: referencePreview.href,
+      }
+    }
+    return null
   }
 
   const handlePaperDownloaded = (paperId: string, localSourceUrl: string) => {
@@ -2246,7 +3601,7 @@ function RightWorkspace() {
 
   useEffect(() => {
     setIsPaperMenuOpen(false)
-  }, [showSearch, activePaperId, openPapers.length])
+  }, [showSearch, activePaperId, openPapers.length, showAgentSearchPapers])
 
   useEffect(() => {
     if (!isReferencePreviewOpen) {
@@ -2279,13 +3634,26 @@ function RightWorkspace() {
     }
   }, [])
 
+  useEffect(() => {
+    const handlePreviewReference = (event: Event) => {
+      const reference = (event as CustomEvent<ConversationReferenceObject>).detail
+      if (!reference) return
+      void handleOpenReferencePreview(referenceToTarget(reference))
+    }
+
+    window.addEventListener('previewReferenceObject', handlePreviewReference)
+    return () => {
+      window.removeEventListener('previewReferenceObject', handlePreviewReference)
+    }
+  }, [])
+
   return (
-    <section className="relative flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
+    <section className="relative min-h-0 flex-1 flex flex-col bg-academic-bg p-2 overflow-hidden border-l-2 border-academic-border">
       <div className="bg-academic-panel border-b border-academic-border p-2 mb-2 flex items-center justify-between shrink-0">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {openPapers.length === 0 ? (
             <button className="px-3 py-1 text-sm font-medium text-academic-muted border-b-2 border-academic-accent">
-              Literature Search
+              {showAgentSearchPapers ? 'Agent Search Results' : 'Literature Search'}
             </button>
           ) : (
             <>
@@ -2322,6 +3690,7 @@ function RightWorkspace() {
                         }`}
                         onClick={() => {
                           setShowSearch(true)
+                          onHideAgentSearchPapers()
                           setIsPaperMenuOpen(false)
                         }}
                       >
@@ -2333,6 +3702,30 @@ function RightWorkspace() {
 
                       <div className="my-1 border-t border-academic-border"></div>
 
+                      {agentSearchPapers.length > 0 ? (
+                        <>
+                          <button
+                            type="button"
+                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                              showAgentSearchPapers
+                                ? 'bg-red-50 text-academic-accent'
+                                : 'text-academic-text hover:bg-academic-hover'
+                            }`}
+                            onClick={() => {
+                              onShowAgentSearchPapers()
+                              setShowSearch(false)
+                              setIsPaperMenuOpen(false)
+                            }}
+                          >
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-academic-accent shadow-sm ring-1 ring-academic-border">
+                              <i className="fa-solid fa-list-ul text-[11px]"></i>
+                            </span>
+                            <span className="truncate">Agent Search Results</span>
+                          </button>
+                          <div className="my-1 border-t border-academic-border"></div>
+                        </>
+                      ) : null}
+
                       {openPapers.map((paper) => (
                         <div key={paper.paper_id} className="flex items-center gap-2 px-2 py-0.5">
                           <button
@@ -2343,6 +3736,7 @@ function RightWorkspace() {
                                 : 'text-academic-text hover:bg-academic-hover'
                             }`}
                             onClick={() => {
+                              onHideAgentSearchPapers()
                               setShowSearch(false)
                               setActivePaperId(paper.paper_id)
                               setIsPaperMenuOpen(false)
@@ -2431,7 +3825,18 @@ function RightWorkspace() {
         />
       </div>
 
-      <div className={`relative flex-1 overflow-hidden ${isSearchVisible ? 'hidden' : 'block'}`}>
+      <div className={`flex-1 min-h-0 flex-col ${showAgentSearchPapers ? 'flex' : 'hidden'}`}>
+        <AgentSearchResultsPanel
+          papers={agentSearchPapers}
+          onOpenPaper={handleOpenPaperById}
+          onBackToSearch={() => {
+            onHideAgentSearchPapers()
+            setShowSearch(true)
+          }}
+        />
+      </div>
+
+      <div className={`relative flex-1 overflow-hidden ${isSearchVisible || showAgentSearchPapers ? 'hidden' : 'block'}`}>
         <LaTeXViewer
           paper={activePaper}
           annotations={activeAnnotations}
@@ -2472,6 +3877,12 @@ function RightWorkspace() {
               </div>
 
               <div className="flex items-center gap-2">
+                {getPreviewReference() ? (
+                  <ReferenceButton
+                    reference={getPreviewReference()!}
+                    className="h-8 w-8"
+                  />
+                ) : null}
                 {referencePreview.kind === 'paper-ready' ? (
                   <button
                     type="button"
@@ -2539,6 +3950,108 @@ function RightWorkspace() {
         </div>
       ) : null}
     </section>
+  )
+}
+
+function AgentSearchResultsPanel({
+  papers,
+  onOpenPaper,
+  onBackToSearch,
+}: {
+  papers: AgentSearchPaper[]
+  onOpenPaper: (paperId: string) => Promise<LiteratureDetail | null>
+  onBackToSearch: () => void
+}) {
+  const [openingPaperId, setOpeningPaperId] = useState<string | null>(null)
+
+  const handleOpen = async (paperId: string) => {
+    setOpeningPaperId(paperId)
+    try {
+      await onOpenPaper(paperId)
+    } finally {
+      setOpeningPaperId((current) => current === paperId ? null : current)
+    }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white shadow-soft border-2 border-academic-border">
+      <div className="h-8 shrink-0 border-b border-academic-border bg-academic-hover flex items-center justify-between px-3">
+        <h3 className="font-serif text-xs font-bold flex items-center gap-2">
+          <i className="fa-solid fa-list-ul text-academic-accent text-xs"></i>
+          Agent Search Results
+        </h3>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-academic-muted">{papers.length} papers</span>
+          <button
+            type="button"
+            className="rounded border border-academic-border bg-white px-2 py-0.5 text-[10px] text-academic-text transition-colors hover:bg-academic-hover"
+            onClick={onBackToSearch}
+          >
+            Search
+          </button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {papers.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-center text-xs text-academic-muted">
+            No agent search results yet.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {papers.map((paper) => (
+              <article
+                key={paper.paper_id}
+                className="rounded border border-academic-border bg-academic-bg/40 p-3"
+              >
+                {(() => {
+                  const reference = agentSearchPaperToReference(paper)
+                  return (
+                    <>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-semibold leading-snug text-academic-text">
+                      {formatPaperDisplayTitle(paper.title)}
+                    </h4>
+                    <p className="mt-1 text-[11px] text-academic-muted">
+                      {paper.paper_id}
+                      {paper.year ? ` · ${paper.year}` : ''}
+                      {paper.authors.length > 0 ? ` · ${paper.authors.slice(0, 3).join(', ')}` : ''}
+                    </p>
+                  </div>
+                  {paper.status ? (
+                    <span className="shrink-0 rounded bg-white px-2 py-0.5 text-[10px] text-academic-muted ring-1 ring-academic-border">
+                      {paper.status}
+                    </span>
+                  ) : null}
+                </div>
+
+                {paper.abstract ? (
+                  <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-academic-text/80">
+                    {paper.abstract}
+                  </p>
+                ) : null}
+
+                <div className="mt-3 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-academic-border bg-white px-2.5 py-1 text-[10px] text-academic-text transition-colors hover:bg-academic-hover disabled:opacity-50"
+                    onClick={() => void handleOpen(paper.paper_id)}
+                    disabled={openingPaperId === paper.paper_id}
+                  >
+                    {openingPaperId === paper.paper_id ? 'Opening...' : 'Open'}
+                  </button>
+                  <ReferenceButton reference={reference} className="h-7 w-7" />
+                </div>
+                    </>
+                  )
+                })()}
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -2809,7 +4322,10 @@ function LiteratureSearch({
                 <span>Page {searchPage} / {Math.max(searchTotalPages, 1)}</span>
               </div>
 
-              <div className="visible-scrollbar space-y-3 flex-1 min-h-0 overflow-y-auto pr-1">
+              <AutoHideScrollArea
+                className="flex-1 min-h-0"
+                viewportClassName="space-y-3 pr-4"
+              >
                 {searchResults.map((paper) => (
                   <div
                     key={paper.paper_id}
@@ -2831,6 +4347,10 @@ function LiteratureSearch({
                           )}
                         </span>
                       </h4>
+                      <ReferenceButton
+                        reference={literaturePaperToReference(paper)}
+                        className="ml-2 shrink-0"
+                      />
                     </div>
                     <p className="text-xs text-academic-muted mb-2">
                       {paper.authors.slice(0, 3).join(', ')}
@@ -2870,7 +4390,7 @@ function LiteratureSearch({
                     </div>
                   </div>
                 ))}
-              </div>
+              </AutoHideScrollArea>
 
               <div className="mt-4 flex items-center justify-end gap-2">
                 <button
@@ -2929,7 +4449,10 @@ function LiteratureSearch({
         </div>
 
         {!isRecentCollapsed && (
-          <div className="visible-scrollbar flex-1 min-h-0 p-4 overflow-y-auto">
+          <AutoHideScrollArea
+            className="flex-1 min-h-0"
+            viewportClassName="p-4 pr-4"
+          >
             {isLoadingRecent ? (
               <div className="text-center text-academic-muted py-8">
                 <i className="fa-solid fa-spinner fa-spin text-2xl mb-3"></i>
@@ -2955,17 +4478,23 @@ function LiteratureSearch({
                         {paper.authors.length > 2 && ' et al.'} • {paper.year}
                       </p>
                     </div>
-                    {paper.is_downloaded && paper.local_source_url && (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          openDownloadLink(paper.local_source_url!)
-                        }}
-                        className="shrink-0 text-xs text-academic-accent hover:text-red-700"
-                      >
-                        LaTeX
-                      </button>
-                    )}
+                    <div className="flex shrink-0 items-center gap-2">
+                      <ReferenceButton
+                        reference={literaturePaperToReference(paper)}
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                      {paper.is_downloaded && paper.local_source_url && (
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            openDownloadLink(paper.local_source_url!)
+                          }}
+                          className="text-xs text-academic-accent hover:text-red-700"
+                        >
+                          LaTeX
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="flex gap-2 flex-wrap">
                     {paper.tags.map((tag, idx) => (
@@ -2991,7 +4520,7 @@ function LiteratureSearch({
                 <p className="text-sm">No recent papers yet</p>
               </div>
             )}
-          </div>
+          </AutoHideScrollArea>
         )}
       </div>
     </div>
@@ -3305,22 +4834,33 @@ function LaTeXViewer({
               </div>
 
               <div className="flex shrink-0 flex-wrap gap-2 lg:justify-end">
+                <ReferenceButton reference={literaturePaperToReference(paper)} className="h-8 w-8" />
                 {paper.url && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenReference?.({
-                        label: paper.title,
-                        href: paper.url!,
-                        isArxiv: false,
-                      })
-                    }
-                    className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover border border-academic-border text-academic-text hover:bg-academic-border transition-colors"
-                    title="Open Source Page"
-                    aria-label="Open Source Page"
-                  >
-                    <i className="fa-solid fa-arrow-up-right-from-square text-xs"></i>
-                  </button>
+                  <>
+                    <ReferenceButton
+                      reference={{
+                        kind: 'link',
+                        label: `${paper.title} Source`,
+                        href: paper.url,
+                      }}
+                      className="h-8 w-8"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenReference?.({
+                          label: paper.title,
+                          href: paper.url!,
+                          isArxiv: false,
+                        })
+                      }
+                      className="flex h-8 w-8 items-center justify-center rounded bg-academic-hover border border-academic-border text-academic-text hover:bg-academic-border transition-colors"
+                      title="Open Source Page"
+                      aria-label="Open Source Page"
+                    >
+                      <i className="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+                    </button>
+                  </>
                 )}
               </div>
             </div>

@@ -51,6 +51,51 @@
   background-clip: padding-box;
 }
 
+.small-scrollbar {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+  overscroll-behavior: contain;
+}
+
+.small-scrollbar::-webkit-scrollbar {
+  display: block;
+  width: 7px;
+  height: 7px;
+}
+
+.small-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.small-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+  min-height: 36px;
+  min-width: 36px;
+}
+
+.small-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.custom-scrollbar-viewport {
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+
+.custom-scrollbar-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   padding: 0;

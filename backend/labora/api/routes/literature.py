@@ -27,6 +27,10 @@ from labora.tools import (
     compile_latex_archive_to_pdf,
     is_latex_compiler_available,
 )
+from labora.tools.arxiv_rate_limiter import (
+    is_arxiv_url,
+    wait_for_arxiv_request_slot,
+)
 from labora.tools.latex_parser import parse_latex_from_archive
 
 router = APIRouter()
@@ -316,7 +320,7 @@ async def _search_arxiv_paginated(
 ) -> Dict[str, Any]:
     start = (page - 1) * page_size
     # Fetch more than needed so we can slice for pagination without extra API calls.
-    # arxiv package handles rate limiting internally.
+    # Requests are globally throttled in labora.tools.arxiv_rate_limiter.
     fetch_count = start + page_size
 
     raw_results = await asyncio.to_thread(
@@ -370,6 +374,8 @@ async def _get_arxiv_paper(paper_id: str) -> Optional[Dict[str, Any]]:
 
 
 async def _download_binary(url: str, destination: Path) -> None:
+    if is_arxiv_url(url):
+        await asyncio.to_thread(wait_for_arxiv_request_slot)
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()

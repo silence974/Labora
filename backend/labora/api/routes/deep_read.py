@@ -112,6 +112,7 @@ def _row_to_result(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 def _save_deep_read_result(task: Dict[str, Any]) -> None:
+    _init_deep_read_db()
     paper_id = _normalize_paper_id(task.get("paper_id", ""))
     if not paper_id:
         return
@@ -161,6 +162,7 @@ def _save_deep_read_result(task: Dict[str, Any]) -> None:
 
 
 def _get_deep_read_by_paper(paper_id: str) -> Optional[Dict[str, Any]]:
+    _init_deep_read_db()
     normalized_id = _normalize_paper_id(paper_id)
     with _connect() as conn:
         row = conn.execute(
@@ -175,6 +177,7 @@ def _get_deep_read_by_paper(paper_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _get_deep_read_by_task(task_id: str) -> Optional[Dict[str, Any]]:
+    _init_deep_read_db()
     with _connect() as conn:
         row = conn.execute(
             """
@@ -188,6 +191,7 @@ def _get_deep_read_by_task(task_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _list_deep_read_results() -> list[Dict[str, Any]]:
+    _init_deep_read_db()
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -200,6 +204,7 @@ def _list_deep_read_results() -> list[Dict[str, Any]]:
 
 
 def _delete_deep_read_by_task(task_id: str) -> None:
+    _init_deep_read_db()
     with _connect() as conn:
         conn.execute(
             """

@@ -15,11 +15,11 @@ if command -v npx &>/dev/null; then
   npx concurrently \
     --names "backend,frontend" \
     --prefix-colors "cyan,magenta" \
-    "cd $REPO_ROOT/backend && uv run python main.py --reload" \
+    "cd $REPO_ROOT/backend && LABORA_PROJECT_DIR=$REPO_ROOT uv run python main.py --reload --project-dir $REPO_ROOT" \
     "cd $REPO_ROOT/frontend && npm run dev"
 else
   echo "Run these commands in separate terminals:"
-  echo "  cd backend && uv run python main.py --reload"
+  echo "  cd backend && LABORA_PROJECT_DIR=$REPO_ROOT uv run python main.py --reload --project-dir $REPO_ROOT"
   echo "  cd frontend && npm run dev"
   echo "  cd desktop && npm run dev   (optional)"
 fi

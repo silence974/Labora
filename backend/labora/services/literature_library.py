@@ -28,6 +28,7 @@ class LiteratureLibrary:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -85,6 +86,7 @@ class LiteratureLibrary:
         return self.preview_dir / f"{safe_name}.fallback.pdf"
 
     def get_paper(self, paper_id: str) -> Optional[Dict[str, Any]]:
+        self._init_db()
         normalized_id = self.normalize_paper_id(paper_id)
 
         with self._connect() as conn:
@@ -109,6 +111,7 @@ class LiteratureLibrary:
         mark_downloaded: bool = False,
         local_path: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._init_db()
         normalized_id = self.normalize_paper_id(
             str(
                 paper.get("paper_id")
@@ -228,6 +231,7 @@ class LiteratureLibrary:
         return merged
 
     def list_recent_papers(self, limit: int = 10) -> List[Dict[str, Any]]:
+        self._init_db()
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -267,6 +271,7 @@ class LiteratureLibrary:
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
+        self._init_db()
         pattern = f"%{query.strip()}%"
         filters = [
             """

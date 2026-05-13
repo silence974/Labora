@@ -6,6 +6,8 @@ from typing import Dict, Optional, Set, Union
 import urllib.request
 from langchain_core.tools import tool
 
+from labora.tools.arxiv_rate_limiter import wait_for_arxiv_request_slot
+
 
 TABLE_ENV_PATTERN = re.compile(
     r"\\begin\{(?P<env>table\*?|wraptable)\}(?P<args>(?:\[[^\]]*\]|\{[^{}]*\})*)(?P<body>.*?)\\end\{(?P=env)\}",
@@ -455,6 +457,7 @@ def parse_latex_from_arxiv(arxiv_id: str) -> Dict[str, str]:
             tar_path = tmpdir_path / "source.tar"
 
             # 下载源码包
+            wait_for_arxiv_request_slot()
             urllib.request.urlretrieve(source_url, tar_path)
 
             return parse_latex_from_archive(tar_path)

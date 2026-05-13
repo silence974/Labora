@@ -33,6 +33,7 @@ export interface Reflection {
 
 export interface AgentStateResponse {
   task_id: string
+  research_id?: string
   status: string
   interrupt_type?: string
   pending_prompt?: string
@@ -50,7 +51,46 @@ export interface AgentStateResponse {
   reflection?: Reflection
   iteration_count: number
   action_history: ActionHistoryItem[]
+  nodes: AgentTimelineNode[]
   error?: string
+}
+
+export type AgentNodeKind = 'conversation' | 'deep_read' | 'thought'
+
+export interface AgentTimelineNode {
+  id: string
+  sequence?: number
+  task_id?: string
+  kind: AgentNodeKind
+  title: string
+  status: 'completed' | 'active' | 'pending' | string
+  payload: {
+    message?: AgentChatMessage
+    step?: AgentProgressEvent
+    [key: string]: unknown
+  }
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AgentChatMessage {
+  id?: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  actions?: { label: string; value: string }[]
+  references?: AgentReferenceObject[]
+  created_at?: string
+}
+
+export interface AgentReferenceObject {
+  kind: 'paper' | 'link'
+  label: string
+  href: string
+  paperId?: string
+  title?: string
+  authors?: string[]
+  year?: string
+  abstract?: string
 }
 
 export interface ActionHistoryItem {
@@ -69,13 +109,37 @@ export interface AgentResult {
   iteration_count: number
 }
 
+export interface AgentTaskListItem {
+  task_id: string
+  research_id?: string
+  research_question: string
+  initial_direction?: string
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ResearchListItem {
+  research_id: string
+  title: string
+  research_question?: string
+  document?: string
+  status: string
+  latest_task_id?: string
+  session_count: number
+  created_at: string
+  updated_at: string
+}
+
 export interface StartRequest {
   research_question: string
   initial_direction?: string
+  research_id?: string
 }
 
 export interface ResumeRequest {
   user_response: string
+  references?: AgentReferenceObject[]
 }
 
 export interface RollbackRequest {
@@ -83,12 +147,23 @@ export interface RollbackRequest {
 }
 
 export interface AgentStreamEvent {
-  event: 'status' | 'state' | 'final' | 'error'
+  event: 'status' | 'node' | 'state' | 'final' | 'error'
   task_id?: string
-  node?: string
+  research_id?: string
+  node?: string | AgentTimelineNode
   message?: string
   state?: AgentStateResponse
   action_result?: Record<string, unknown>
+}
+
+export interface AgentProgressEvent {
+  label: string
+  description?: string
+  status?: 'completed' | 'active' | 'pending'
+  detail?: string
+  progress?: number
+  kind?: string
+  timestamp?: string
 }
 
 type AgentStreamHandler = (event: AgentStreamEvent) => void
@@ -112,6 +187,10 @@ async function readAgentStream(
     const event = JSON.parse(trimmed) as AgentStreamEvent
     onEvent?.(event)
     if (event.event === 'error') {
+      if (event.state) {
+        finalState = event.state
+        return
+      }
       throw new Error(event.message || 'Agent stream failed')
     }
     if (event.event === 'final' && event.state) {
@@ -142,6 +221,59 @@ async function readAgentStream(
 // ── API Functions ──────────────────────────────────────────────────────────────────
 
 export const researchAgentApi = {
+  async listResearches(): Promise<{ researches: ResearchListItem[] }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/researches`)
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to list researches: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
+  async createResearch(request: { title: string; research_question?: string }): Promise<{ research: ResearchListItem }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/researches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to create research: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
+  async listResearchSessions(researchId: string): Promise<{ sessions: AgentTaskListItem[] }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/researches/${researchId}/sessions`)
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to list sessions: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
+  async clearSession(taskId: string): Promise<{ task_id: string; status: string }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/sessions/${taskId}/clear`, {
+      method: 'POST',
+    })
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to clear session: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
+  async deleteSession(taskId: string): Promise<{ task_id: string; status: string }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/sessions/${taskId}`, {
+      method: 'DELETE',
+    })
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to delete session: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
   async start(request: StartRequest): Promise<AgentStateResponse> {
     const resp = await fetch(`${API_BASE}/api/research-agent/start`, {
       method: 'POST',
@@ -215,6 +347,15 @@ export const researchAgentApi = {
     if (!resp.ok) {
       const detail = await resp.text()
       throw new Error(`Failed to get result: ${resp.status} ${detail}`)
+    }
+    return resp.json()
+  },
+
+  async listTasks(): Promise<{ tasks: AgentTaskListItem[] }> {
+    const resp = await fetch(`${API_BASE}/api/research-agent/`)
+    if (!resp.ok) {
+      const detail = await resp.text()
+      throw new Error(`Failed to list agent tasks: ${resp.status} ${detail}`)
     }
     return resp.json()
   },

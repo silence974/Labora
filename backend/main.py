@@ -1,6 +1,6 @@
-from labora.api import create_app
 import uvicorn
 import argparse
+import os
 
 
 def main():
@@ -8,9 +8,12 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--project-dir", type=str, default=None)
     args = parser.parse_args()
 
-    app = create_app()
+    if args.project_dir:
+        os.environ["LABORA_PROJECT_DIR"] = args.project_dir
+
     uvicorn.run(
         "labora.api:create_app",
         factory=True,
